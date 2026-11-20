@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # Use the runner image's default Xcode (26.x) rather than pinning a point release
+      # that the image will eventually remove. Print it so a toolchain change is visible.
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+      - name: Build
+        run: xcrun swift build
+      - name: Test (headless, no permissions requested)
+        run: ./tools/test.sh
+      - name: Build and verify app bundle
+        run: |
+          ./tools/build-app.sh --debug
+          test -x build/Pilcrow.app/Contents/MacOS/Pilcrow
+          test -f build/Pilcrow.app/Contents/Info.plist
+          test -d build/Pilcrow.app/Contents/Resources
+          plutil -lint build/Pilcrow.app/Contents/Info.plist
+          codesign --verify --deep --strict --verbose=2 build/Pilcrow.app

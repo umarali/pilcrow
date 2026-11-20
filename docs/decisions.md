@@ -1,0 +1,119 @@
+# Decision log
+
+Each entry records what was decided, who decided it, why, and what was turned down. "User" means the maintainer chose explicitly; "Claude" means Claude proposed and the maintainer accepted it by building on it. Entries are append-only: a reversed decision gets a new entry that supersedes it.
+
+Status values: **Active**, **Proposed** (not yet confirmed), **Superseded by D-xx**, **Open** (needs a decision).
+
+The format and several lessons come from the maintainer's earlier project, Benji.
+
+---
+
+### D-01 · Core holds identity, timing, geometry and message assembly; the App holds macOS APIs
+- **When / who:** 2026-11-20 · Claude, from the Benji package split
+- **Why:** Keeps everything that matters testable under `swift test` with no windows, microphone or permissions.
+- **Status:** Active.
+
+### D-02 · Toggle annotation with a configurable Carbon chord plus a menu command
+- **When / who:** 2026-11-20 · Claude, from Benji D-28, D-41, D-42, D-139
+- **Why:** `RegisterEventHotKey` needs no Input Monitoring or Accessibility. A toggle (not hold) leaves the drawing hand free. The menu command is the fallback if registration fails.
+- **Status:** Proposed.
+
+### D-03 · A mark gets a stable number at stroke start; undo removes its transcript reference too
+- **When / who:** 2026-11-20 · Claude
+- **Why:** Numbers are never recycled, so `[n]` in the words always matches the badge in the image.
+- **Status:** Proposed.
+
+### D-04 · Bind each mark to a timestamped frame and a display; burn red strokes and numbers into the exported pixels once
+- **When / who:** 2026-11-20 · Claude, from Benji D-50, D-96
+- **Why:** What the user saw and what the agent receives must match. Capture excludes the overlay, then Core Graphics draws the stored strokes onto the image.
+- **Status:** Proposed.
+
+### D-05 · Align pen events and audio on one monotonic session clock; insert `[n]` after the word being spoken at stroke-down
+- **When / who:** 2026-11-20 · Claude
+- **Why:** Deterministic and explainable. In silence the number goes between the adjacent words. Review lets the user move a misplaced number.
+- **Status:** Proposed.
+
+### D-06 · Evaluate on-device SpeechAnalyzer first; fall back to WhisperKit or FluidAudio against the same offline timing fixture
+- **When / who:** 2026-11-20 · Claude
+- **Why:** Per-word timestamps from SpeechAnalyzer are unverified. Decide on evidence, not assumption.
+- **Status:** Open until the speech spike runs.
+
+### D-07 · Preview one transcript-plus-images message; show "sent" only on confirmed delivery; clean up temp files after consumption or cancellation
+- **When / who:** 2026-11-20 · Claude, from Benji D-30, D-99, D-100
+- **Why:** Capture consent and handoff consent are separate. Cancel or timeout sends nothing.
+- **Status:** Proposed.
+
+### D-08 · Stable local signing identity for development; a separate owner-run Developer ID path for releases
+- **When / who:** 2026-11-20 · Claude, from Benji D-53
+- **Why:** Ad-hoc re-signing makes macOS drop granted permissions on every rebuild.
+- **Status:** Proposed.
+
+### D-09 · The project is called Pilcrow
+- **When / who:** 2026-11-20 · User
+- **Why:** The pilcrow (¶) is the proofreader's paragraph mark, which fits redlining. Namespace is acceptable: a small Swift iOS editor and an Android Markdown app use the name; no Mac product or Homebrew collision was found. Not legal clearance.
+- **Alternatives:** Subpunct (cleanest namespace, awkward to say), Paragraphos (long), Bistre, Adscript, Dele. Rejected earlier: Gules, Nib, Scrim, Sanguine, Obelus, Caret, Stet and others, mostly for clashes with existing tools.
+- **Status:** Active.
+
+### D-10 · macOS 26 and later only for v1
+- **When / who:** 2026-11-20 · User
+- **Why:** Matches the maintainer's Mac and Apple's new SpeechAnalyzer. Smallest test matrix.
+- **Status:** Active.
+
+### D-11 · MIT license
+- **When / who:** 2026-11-20 · Claude
+- **Why:** Matches the small-app tone and the licenses of the candidate dependencies (KeyboardShortcuts, WhisperKit, FluidAudio). Avoid linking FluidAudio's text-to-speech target, which may pull in GPL-licensed eSpeak NG. `perfect-freehand-swift` has no license file, so it is not a dependency; reimplement the smoothing.
+- **Status:** Active.
+
+### D-12 · First end-to-end agent target: Codex CLI
+- **When / who:** 2026-11-20 · Claude default; the maintainer has not chosen
+- **Why:** Codex is the only agent with a documented image flag (`codex -i`), so delivery of the pixels can be verified. Other agents get the same prompt with absolute image paths.
+- **Status:** Open. Confirm which agent the maintainer uses most.
+
+### D-13 · Mark placement with overlapping words: after every word that has started
+- **When / who:** 2026-11-20 · Claude, from an Opus 5.5 review finding
+- **Decision:** A mark's slot is the number of words whose start is at or before the stroke's pen-down time. For non-overlapping words this is the same as D-05 (half-open `[start, end)`, gaps go after the earlier word). With overlapping words it keeps spoken order: a mark never lands before a word that had already ended. Words or strokes with non-finite times are handled as documented in `docs/core.md`.
+- **Why:** The D-05 wording ("after the word being spoken") put a mark before a short word that ended before pen-down when a long word overlapped it.
+- **Status:** Active. Refines D-05.
+
+### D-14 · Model roles for building Pilcrow
+- **When / who:** 2026-11-20 · User
+- **Decision:** Claude Opus 5.5 orchestrates and reviews all code and docs. Development is delegated to Codex models: Sol 6.2 for the hardest AppKit and speech work, Sol 6.1 for substantial features, Terra for well-defined pieces, Luna for small or mechanical tasks (the tiering is Claude's proposal).
+- **Why:** One strong reviewer over faster builders. Delegates skip their own review step; the Opus review replaces it.
+- **Supersedes:** the earlier split (GPT-6.2 Astra for design, Grok 4.7 Fast for research and scaffolding), which built milestone 1.
+- **Status:** Active.
+
+### D-15 · No modal dialogs while the overlay is on screen
+- **When / who:** 2026-11-20 · Claude, after the maintainer's first live test
+- **Decision:** Nothing that blocks input (modal alerts, sheets) may appear while overlay panels are up. Screen Recording is checked (preflight only) when a session opens; if it is off, drawing works normally and the toolbar shows a non-blocking notice with "Enable…". "Enable…" ends the session first, then requests access; System Settings opens only if access was requested before and is still refused. Esc, the hotkey and Finish must work in every state.
+- **Why:** In the live test on macOS 26 without Screen Recording, a modal alert appeared after the first stroke while the screen-saver-level canvas still covered every display and caught the mouse. Clicks were discarded and the hotkey and Esc were deferred or ignored, so the user was locked out of the mouse.
+- **Supersedes:** the milestone 1 permission alert (built under D-07 and the review fixes).
+- **Status:** Active. Fix in progress; needs a re-run of the live test.
+
+### D-16 · Direction: redline review, not recording
+- **When / who:** 2026-11-20 · User chose "differentiate" after an Opus 5.5 comparison with Scrawl
+- **Context:** [Scrawl](https://github.com/kitlangton/scrawl) (MIT, by Kit Langton) is a more mature, video-first tool for showing an agent a problem: it records the screen, voice and ink, picks keyframes, builds a contact sheet, and hands off by paste, an agent skill and a CLI (natively to OpenCode).
+- **Decision:** Pilcrow stays still-image and review-first: precise numbered marks tied to the spoken words, an approval gate before anything is sent, a per-mark fix list, direct delivery to coding agents, and a loop that verifies the agent's fix mark by mark. Pilcrow does not try to match Scrawl's recording features.
+- **Alternatives:** contribute to Scrawl instead (good for small fixes, not for this thesis); fork Scrawl (would take on Rust + GPUI, against Pilcrow's Swift-only design).
+- **Status:** Active.
+
+### D-17 · Adopt Scrawl's lessons on permissions, packaging, overlay input and image legibility
+- **When / who:** 2026-11-20 · Claude, from the Opus 5.5 comparison; follows the D-15 live-test failure
+- **Decision:**
+  1. **Start nothing until Screen Recording is granted.** The hotkey opens no overlay without it; it brings forward a normal (non-overlay) permissions window instead. Access is confirmed with a real one-frame capture, not only `CGPreflightScreenCaptureAccess` (which can be stale). Supersedes D-15's "drawing works without permission".
+  2. **Signed `Pilcrow.app` now** (moves D-08 out of the backlog): a bundle with a stable ID and a stable local signing identity, so permissions attach to Pilcrow, not to Terminal, and survive rebuilds.
+  3. **Overlay input model:** the canvas is click-through by default; it catches the mouse only while ⇧ is held (modifier flags are polled, which needs no permission). Esc finishes and ⌘Z undoes via Carbon hotkeys registered only while a session is open. No Accessibility or Input Monitoring. Marker/Pointer modes go away. The menu bar stays reachable.
+  4. **When to take a new screenshot:** at the first stroke of the session, and again at the next stroke after the user clicked or scrolled the app underneath (seen with a global mouse monitor, which needs no permission).
+  5. **Legible images for agents:** number badges at least 24 px tall in the exported image; images and crops capped at 1600 px long edge and about 1.56 MP (Scrawl's blind-reading results). Replaces the 1568 px / 1.15 MP placeholders.
+  6. **Word timing:** SpeechAnalyzer's `SpeechTranscriber` with `.audioTimeRange` gives per-run timing (as Scrawl uses it); timings are treated as estimates and carried with an `estimated` flag. Narrows D-06.
+- **Status:** Active.
+
+### D-18 · Build order for the differentiators
+- **When / who:** 2026-11-20 · User chose all four; Claude set the order
+- **Decision:** Wave 1: App input/permission model (D-17.1, .3, .4), the `.app` bundle (D-17.2), and in Core the per-mark fix list plus the Core API cleanups. Wave 2: wire App to Core, approval preview, direct delivery to Codex and Claude Code (CLI + agent skill, MCP later), speech. Wave 3: the verify loop. Each step is reviewed by Opus 5.5 (D-14).
+- **Status:** Active.
+
+### D-19 · Local signing: Apple Development identity first, self-signed fallback
+- **When / who:** 2026-11-20 · Claude, from the Opus 5.5 review of the packaging
+- **Decision:** D-08 is now active through D-17.2. For local builds, sign with an existing Apple Development identity (`PILCROW_SIGN_IDENTITY=<SHA-1>`): its designated requirement is Apple-anchored and stable, and it needs no keychain writes. Contributors without an Apple account use the self-signed "Pilcrow Local Signing" identity (`tools/create-local-signing-identity.sh`, built with the system `/usr/bin/openssl`). Ad-hoc signing still works but resets permissions on every rebuild, and the build script warns. Developer ID with notarization remains the release path. Launch with `open build/Pilcrow.app` so permissions attach to Pilcrow, not Terminal.
+- **Supersedes:** D-08's status "Proposed".
+- **Status:** Active.
