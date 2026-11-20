@@ -1,70 +1,8 @@
 import AppKit
+import PilcrowCore
 import os
 
 let stateLog = Logger(subsystem: "org.pilcrow.app", category: "session")
-
-@MainActor
-private final class PassFrame {
-    private static let captureTimeout: Duration = .seconds(5)
-
-    let geometry: FrameGeometry
-    let pass: Int
-    var marks: [Mark] = []
-    private var outcome: CaptureOutcome?
-    private var capture: Task<Void, Never>?
-    private var deadline: Task<Void, Never>?
-    private var waiter: CheckedContinuation<CaptureOutcome, Never>?
-
-    init(_ geometry: FrameGeometry, pass: Int) {
-        self.geometry = geometry
-        self.pass = pass
-        let expires = ContinuousClock.now + Self.captureTimeout
-        capture = Task { [weak self] in
-            let result = await Capture.frame(geometry)
-            guard !Task.isCancelled, let self else { return }
-            let resolved: CaptureOutcome = ContinuousClock.now < expires ? result : .timedOut
-            self.resolve(resolved)
-        }
-        // A stuck ScreenCaptureKit call cannot be cancelled. Finish is still bounded by
-        // this timeout because it waits for the resolved outcome, not the capture task.
-        deadline = Task { [weak self] in
-            do { try await Task.sleep(until: expires, clock: .continuous) }
-            catch { return }
-            self?.resolve(.timedOut)
-        }
-    }
-
-    func cancel() {
-        resolve(.unavailable)
-    }
-
-    func result() async -> CaptureOutcome {
-        if let outcome { return outcome }
-        return await withCheckedContinuation {
-            precondition(waiter == nil, "A frame supports one result waiter")
-            waiter = $0
-        }
-    }
-
-    private func resolve(_ result: CaptureOutcome) {
-        guard outcome == nil else { return }
-        outcome = result
-        let status: String
-        switch result {
-        case .image: status = "captured"
-        case .permissionNeeded: status = "permission needed"
-        case .unavailable: status = "unavailable"
-        case .timedOut: status = "timed out"
-        }
-        stateLog.notice("Frame for pass \(self.pass, privacy: .public), display \(self.geometry.display, privacy: .public): \(status, privacy: .public)")
-        capture?.cancel()
-        capture = nil
-        deadline?.cancel()
-        deadline = nil
-        waiter?.resume(returning: result)
-        waiter = nil
-    }
-}
 
 @MainActor
 final class AnnotationSession {
@@ -73,17 +11,34 @@ final class AnnotationSession {
         case permissionsWindow = "permissions window Start", displayChange = "display change"
     }
 
+    private struct Display {
+        let origin: Point
+        let bounds: Size
+        let scale: CGFloat
+
+        init(_ screen: NSScreen) {
+            origin = Point(x: screen.frame.minX, y: screen.frame.minY)
+            bounds = Size(width: screen.frame.width, height: screen.frame.height)
+            scale = screen.backingScaleFactor
+        }
+    }
+
     private var panels: [CGDirectDisplayID: CanvasPanel] = [:]
     private var toolbar: Toolbar?
     private var mouseMonitor: Any?
     private var inputTimer: Timer?
     private var previousCursor: NSCursor?
-    private var frames: [PassFrame] = []
-    private var active: (frame: PassFrame, mark: Mark)?
-    private var dragDisplay: CGDirectDisplayID?
+    private var core = Session()
+    private var t0: TimeInterval = 0
+    private var displays: [CGDirectDisplayID: Display] = [:]
+    private var currentFrameIDs: [CGDirectDisplayID: Frame.ID] = [:]
+    private var pendingCaptures: [Frame.ID: CaptureTask] = [:]
+    private var originals: [Frame.ID: CGImage] = [:]
+    private var captureFailures: [Frame.ID: CaptureFailure] = [:]
+    private var activeStroke: (id: MarkID, frame: Frame)?
+    private var buttonWasUp = false
     private var lastStrokeEnd: TimeInterval?
     private var needsNewPass = false
-    private var nextNumber = 1
     private var pass = 1
     private var ended = false
     private let exports: ExportStore
@@ -105,11 +60,12 @@ final class AnnotationSession {
         guard let screen = screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? screens.first else {
             return false
         }
+        t0 = ProcessInfo.processInfo.systemUptime
         for item in screens {
             guard let id = item.displayID else { continue }
+            displays[id] = Display(item)
             let panel = CanvasPanel(frame: item.frame)
-            let geometry = FrameGeometry(display: id, size: item.frame.size, scale: item.backingScaleFactor)
-            panel.contentView = Canvas(geometry, session: self)
+            panel.contentView = Canvas(display: id, size: item.frame.size, session: self)
             panels[id] = panel
             panel.orderFrontRegardless()
         }
@@ -140,8 +96,8 @@ final class AnnotationSession {
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]
         ) { [weak self] event in
             MainActor.assumeIsolated {
-                guard let self, !self.ended, self.dragDisplay == nil,
-                      let lastStrokeEnd = self.lastStrokeEnd, event.timestamp >= lastStrokeEnd else { return }
+                guard let self, !self.ended, self.activeStroke == nil,
+                      let lastStrokeEnd = self.lastStrokeEnd, event.timestamp - self.t0 >= lastStrokeEnd else { return }
                 self.needsNewPass = true
             }
         }
@@ -153,15 +109,20 @@ final class AnnotationSession {
     }
 
     private func updateInput() {
-        if dragDisplay != nil, NSEvent.pressedMouseButtons & 1 == 0 {
-            completeStroke(at: ProcessInfo.processInfo.systemUptime)
-            stateLog.notice("Stroke ended after mouse release without mouse-up")
+        if activeStroke != nil {
+            let buttonIsUp = NSEvent.pressedMouseButtons & 1 == 0
+            if buttonIsUp && buttonWasUp {
+                completeStroke(at: ProcessInfo.processInfo.systemUptime)
+                stateLog.notice("Stroke ended after mouse release without mouse-up")
+            } else {
+                buttonWasUp = buttonIsUp
+            }
         }
         let pointer = NSEvent.mouseLocation
         let aboveToolbar = toolbar.map { NSMouseInRect(pointer, $0.frame, false) } ?? false
         let armedDisplay: CGDirectDisplayID?
-        if let dragDisplay {
-            armedDisplay = dragDisplay
+        if let activeStroke {
+            armedDisplay = activeStroke.frame.displayID
         } else if !aboveToolbar, Self.isDrawingShift(NSEvent.modifierFlags) {
             armedDisplay = panels.first { NSMouseInRect(pointer, $0.value.frame, false) }?.key
         } else {
@@ -182,78 +143,156 @@ final class AnnotationSession {
     }
 
     private func restoreCursor() {
-        previousCursor?.set()
-        previousCursor = nil
+        guard let previousCursor else { return }
+        previousCursor.set()
+        self.previousCursor = nil
     }
 
-    func visibleMarks(on display: CGDirectDisplayID) -> [Mark] {
-        frames.first { $0.pass == pass && $0.geometry.display == display }?.marks ?? []
+    func visibleMarks(on display: CGDirectDisplayID) -> [Stroke] {
+        guard let frameID = currentFrameIDs[display] else { return [] }
+        return core.liveMarks.filter { $0.frameID == frameID }
     }
 
-    func begin(on geometry: FrameGeometry, at point: CGPoint) {
-        guard !ended, dragDisplay == nil else { return }
-        if needsNewPass {
-            pass += 1
-            needsNewPass = false
-        }
-        let frame: PassFrame
-        if let existing = frames.first(where: { $0.pass == pass && $0.geometry == geometry }) {
-            frame = existing
+    func begin(on display: CGDirectDisplayID, at point: CGPoint, timestamp: TimeInterval) {
+        guard !ended, activeStroke == nil, let geometry = displays[display] else { return }
+        let existingID = needsNewPass ? nil : currentFrameIDs[display]
+        let frame: Frame
+        if let existingID {
+            guard let registered = core.frames.first(where: { $0.id == existingID }) else {
+                reportCoreError(Session.ValidationError.unknownFrameID, during: "find the current frame")
+                return
+            }
+            frame = registered
         } else {
-            frame = PassFrame(geometry, pass: pass)
-            frames.append(frame)
+            frame = Frame(id: Frame.ID(), displayID: display, boundsInPoints: geometry.bounds)
         }
-        let mark = Mark(number: nextNumber, start: point)
-        nextNumber += 1
-        frame.marks.append(mark)
-        active = (frame, mark)
-        dragDisplay = geometry.display
-        refresh()
+        guard let firstPoint = normalized(point, in: frame) else { return }
+
+        if existingID == nil {
+            do {
+                try core.addFrame(frame)
+            } catch {
+                reportCoreError(error, during: "register the frame")
+                return
+            }
+            let capturePass = needsNewPass ? pass + 1 : pass
+            pendingCaptures[frame.id] = CaptureTask(frame: frame, scale: geometry.scale) { [weak self] result in
+                self?.receiveCapture(result, for: frame.id, display: display, pass: capturePass)
+            }
+        }
+        do {
+            let mark = try core.beginStroke(at: timestamp - t0, frame: frame.id, firstPoint: firstPoint)
+            if needsNewPass {
+                pass += 1
+                needsNewPass = false
+                currentFrameIDs = [display: frame.id]
+                discardUnusedCaptures()
+            } else {
+                currentFrameIDs[display] = frame.id
+            }
+            activeStroke = (mark, frame)
+            refresh()
+        } catch {
+            if existingID == nil { pendingCaptures[frame.id]?.cancel() }
+            reportCoreError(error, during: "begin the stroke")
+        }
     }
 
     func extend(on display: CGDirectDisplayID, to point: CGPoint) {
-        guard let active, active.frame.geometry.display == display else { return }
-        active.mark.append(point)
+        guard let activeStroke, activeStroke.frame.displayID == display else { return }
+        buttonWasUp = false
+        guard let sample = normalized(point, in: activeStroke.frame) else { return }
+        core.append(point: sample, to: activeStroke.id)
         panels[display]?.contentView?.needsDisplay = true
     }
 
     func endStroke(on display: CGDirectDisplayID, at timestamp: TimeInterval) {
-        guard dragDisplay == display else { return }
+        guard activeStroke?.frame.displayID == display else { return }
         completeStroke(at: timestamp)
         updateInput()
     }
 
-    private func completeStroke(at timestamp: TimeInterval) {
-        active = nil
-        dragDisplay = nil
-        lastStrokeEnd = timestamp
+    private func normalized(_ point: CGPoint, in frame: Frame) -> NormalizedPoint? {
+        guard let origin = displays[frame.displayID]?.origin else { return nil }
+        return Geometry.normalizedPoint(screenPoint: Point(x: point.x, y: point.y), frameOrigin: origin, frame: frame)
+    }
+
+    private func completeStroke(at uptime: TimeInterval) {
+        guard let activeStroke else { return }
+        let time = uptime - t0
+        core.endStroke(id: activeStroke.id, at: time)
+        self.activeStroke = nil
+        buttonWasUp = false
+        lastStrokeEnd = time
+    }
+
+    private var currentMarks: [Stroke] {
+        let ids = Set(currentFrameIDs.values)
+        return core.liveMarks.filter { ids.contains($0.frameID) }
     }
 
     func undo() {
-        guard !ended else { return }
-        let latest = frames.filter { $0.pass == pass }.max {
-            ($0.marks.last?.number ?? 0) < ($1.marks.last?.number ?? 0)
-        }
-        guard let latest, latest.marks.popLast() != nil else { return }
-        active = nil
-        discardEmptyFrames()
+        guard !ended, let latest = currentMarks.last else { return }
+        core.deleteMark(id: latest.id)
         refresh()
     }
 
     func clearPass() {
         guard !ended else { return }
-        active = nil
-        for frame in frames where frame.pass == pass { frame.marks.removeAll() }
-        discardEmptyFrames()
+        for mark in currentMarks { core.deleteMark(id: mark.id) }
         refresh()
     }
 
-    private func discardEmptyFrames() {
-        frames.removeAll { frame in
-            guard frame.marks.isEmpty else { return false }
-            frame.cancel()
-            return true
+    private func discardUnusedCaptures() {
+        let retained = Set(core.liveMarks.map(\.frameID))
+        for id in Array(pendingCaptures.keys) where !retained.contains(id) {
+            pendingCaptures[id]?.cancel()
         }
+        originals = originals.filter { retained.contains($0.key) }
+        captureFailures = captureFailures.filter { retained.contains($0.key) }
+    }
+
+    private func receiveCapture(_ outcome: CaptureOutcome, for id: Frame.ID, display: CGDirectDisplayID, pass: Int) {
+        pendingCaptures.removeValue(forKey: id)
+        guard !core.isSealed else { return }
+        guard let frame = core.frames.first(where: { $0.id == id }) else {
+            reportCoreError(Session.ValidationError.unknownFrameID, during: "resolve the capture")
+            return
+        }
+        guard !frame.isComplete, !frame.captureFailed else { return }
+
+        let status: String
+        switch outcome {
+        case let .image(image, uptime):
+            do {
+                try core.completeFrame(id: id, pixelSize: Size(width: Double(image.width), height: Double(image.height)),
+                                       capturedAt: uptime - t0)
+                originals[id] = image
+                status = "captured"
+            } catch {
+                reportCoreError(error, during: "complete the capture")
+                recordCaptureFailure(.invalidCapture, for: id)
+                status = CaptureFailure.invalidCapture.rawValue
+            }
+        case .failed(let failure):
+            recordCaptureFailure(failure, for: id)
+            status = failure.rawValue
+        }
+        stateLog.notice("Frame for pass \(pass, privacy: .public), display \(display, privacy: .public): \(status, privacy: .public)")
+    }
+
+    private func recordCaptureFailure(_ failure: CaptureFailure, for id: Frame.ID) {
+        do {
+            try core.failFrame(id: id)
+            captureFailures[id] = failure
+        } catch {
+            reportCoreError(error, during: "record the capture failure")
+        }
+    }
+
+    private func reportCoreError(_ error: Error, during operation: String) {
+        stateLog.error("Could not \(operation, privacy: .public): \(String(describing: error), privacy: .public)")
+        if !ended { toolbar?.showError("Couldn’t " + operation) }
     }
 
     private func refresh() {
@@ -262,15 +301,13 @@ final class AnnotationSession {
     }
 
     private func refreshToolbar() {
-        toolbar?.update(marks: frames.reduce(0) { $0 + $1.marks.count },
-                        hasCurrentMarks: frames.contains { $0.pass == pass && !$0.marks.isEmpty })
+        toolbar?.update(marks: core.liveMarks.count, hasCurrentMarks: !currentMarks.isEmpty)
     }
 
     func finish(_ trigger: Trigger) {
         guard !ended else { return }
         ended = true
-        active = nil
-        dragDisplay = nil
+        completeStroke(at: ProcessInfo.processInfo.systemUptime)
         hotKeys.unregister(.escape)
         hotKeys.unregister(.undo)
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
@@ -282,54 +319,58 @@ final class AnnotationSession {
         restoreCursor()
         closing()
         stateLog.notice("Session finished via \(trigger.rawValue, privacy: .public)")
-        discardEmptyFrames()
-        let marked = frames
-        frames.removeAll()
+        discardUnusedCaptures()
+        let captures = core.framesWithMarks.compactMap { pendingCaptures[$0.id] }
         Task {
-            var captured: [CapturedMarks] = []
-            var timedOut = 0
-            var permissionNeeded = false
-            for frame in marked {
-                switch await frame.result() {
-                case let .image(image):
-                    captured.append(CapturedMarks(image: image, geometry: frame.geometry,
-                                                  marks: frame.marks.map { $0.snapshot() }))
-                case .timedOut:
-                    timedOut += 1
-                case .permissionNeeded:
-                    permissionNeeded = true
-                case .unavailable:
-                    break
-                }
-            }
-            let timeoutNote = timedOut == 0 ? "" : " · \(timedOut) timed out"
-            let permissionNote = permissionNeeded ? " · Screen Recording off" : ""
-            guard !captured.isEmpty else {
-                let result = marked.isEmpty ? "No marks to export" : "No frame to export"
-                let message = result + permissionNote + timeoutNote
-                stateLog.notice("Export skipped: \(message, privacy: .public)")
-                completed(nil, message)
+            for capture in captures { await capture.wait() }
+            core.seal()
+            let message = MessageBuilder.build(session: core, onlyFinal: false)
+            guard !message.isEmpty else {
+                stateLog.notice("Nothing to send")
+                completed(nil, "Nothing to send")
                 return
             }
-            do {
-                let folder = try exports.prepare()
-                do {
-                    let ready = captured
-                    try await Task.detached { try Export.write(ready, to: folder) }.value
-                } catch {
-                    exports.discard(folder)
-                    throw error
-                }
-                exports.keepOnly(folder)
-                let missing = marked.count - captured.count
-                let suffix = missing == 0 ? "" : " · \(missing) without a frame"
-                stateLog.notice("Export completed: \(captured.count, privacy: .public) PNGs, \(missing, privacy: .public) missing frames, \(timedOut, privacy: .public) timeouts")
-                completed(folder, "Exported \(captured.count) PNG" + (captured.count == 1 ? "" : "s")
-                          + suffix + permissionNote + timeoutNote)
-            } catch {
-                stateLog.notice("Export failed")
-                completed(nil, "Couldn’t write the PNG export" + timeoutNote)
-            }
+            await export(message)
         }
+    }
+
+    private func export(_ message: OutgoingMessage) async {
+        let timedOut = captureFailures.values.count { $0 == .timedOut }
+        let invalid = captureFailures.values.count { $0 == .invalidCapture }
+        let missing = message.failedImages.count
+        var notes = ""
+        if missing > 0 { notes += " · \(missing) without a frame" }
+        if captureFailures.values.contains(.permissionNeeded) { notes += " · Screen Recording off" }
+        if timedOut > 0 { notes += " · \(timedOut) timed out" }
+        if invalid > 0 { notes += " · \(invalid) invalid captures" }
+
+        let folder: URL
+        do {
+            folder = try exports.prepare()
+        } catch {
+            stateLog.error("Could not prepare the export folder: \(String(describing: error), privacy: .public)")
+            completed(nil, "Couldn’t write the export" + notes)
+            return
+        }
+
+        let snapshot = core
+        let images = originals
+        let result = await Task.detached {
+            Export.write(session: snapshot, message: message, originals: images, to: folder)
+        }.value
+        if !result.failedFiles.isEmpty { notes += " · \(result.failedFiles.count) files failed" }
+
+        let count = result.attachments.count
+        guard count > 0 || result.messageWritten else {
+            exports.discard(folder)
+            completed(nil, "Couldn’t write the export" + notes)
+            return
+        }
+
+        exports.keepOnly(folder)
+        var summary = count == 0 ? "Exported message" : "Exported \(count) " + (count == 1 ? "PNG" : "PNGs")
+        if count > 0, result.messageWritten { summary += " and message" }
+        stateLog.notice("\(summary, privacy: .public)\(notes, privacy: .public)")
+        completed(folder, summary + notes)
     }
 }

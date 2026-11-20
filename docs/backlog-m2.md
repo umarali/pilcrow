@@ -30,3 +30,10 @@ The Core API and test items that were here were fixed in wave 1 (Sol 6.1, review
 - **Export-failure message** omits the "Screen Recording off" note when frames also failed for permission.
 - **Stray file** `Tests/PilcrowCoreTests/test-results.log` triggers a SwiftPM "unhandled file" warning; delete it or exclude it.
 
+
+## From the wave 2 wiring review (low)
+
+- **⌘Z during a drag** deletes the in-progress stroke but keeps `activeStroke`, so the rest of the drag is dropped. Ignore undo while a stroke is active, or end it first (AnnotationSession ~234).
+- **Pill error never clears** after a later stroke succeeds (Toolbar ~74). Clear it on the next successful pen-down.
+- **`message.md` can name files that failed to write.** The approval preview must reconcile the text with the files actually written (Export ~158).
+- **Overlay badge vs export badge size** differ (20 pt live vs about 23.5 pt at 2× / 29 pt at 1× exported, from the 24 px minimum). Allowed by the contract; consider matching the live badge to the export.

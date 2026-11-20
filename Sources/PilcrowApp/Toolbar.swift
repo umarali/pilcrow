@@ -9,6 +9,7 @@ final class Toolbar: OverlayPanel {
     private let clear = ToolbarButton()
     private let count = NSTextField(labelWithString: "0 marks")
     private let hint = NSTextField(labelWithString: "Hold ⇧ to draw")
+    private let errorLabel = NSTextField(labelWithString: "")
     private let shortcutWarning = NSTextField(labelWithString: "")
     private let stack = NSStackView()
     private var area: NSRect
@@ -30,6 +31,9 @@ final class Toolbar: OverlayPanel {
         shortcutWarning.font = .systemFont(ofSize: 12)
         shortcutWarning.textColor = .white
         shortcutWarning.isHidden = true
+        errorLabel.font = .systemFont(ofSize: 12)
+        errorLabel.textColor = .white
+        errorLabel.isHidden = true
 
         let controls = NSStackView(views: [count, hint, undo, clear, finish])
         controls.spacing = 6
@@ -38,6 +42,7 @@ final class Toolbar: OverlayPanel {
         stack.detachesHiddenViews = true
         stack.addArrangedSubview(controls)
         stack.addArrangedSubview(shortcutWarning)
+        stack.addArrangedSubview(errorLabel)
         stack.edgeInsets = NSEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
         stack.spacing = 2
 
@@ -64,6 +69,12 @@ final class Toolbar: OverlayPanel {
         hint.stringValue = hints.joined(separator: " · ")
         shortcutWarning.stringValue = "Shortcut unavailable: " + shortcuts.map(\.label).joined(separator: ", ")
         shortcutWarning.isHidden = shortcuts.isEmpty
+    }
+
+    func showError(_ message: String) {
+        errorLabel.stringValue = message
+        errorLabel.isHidden = false
+        resizeAndPosition()
     }
 
     func update(marks: Int, hasCurrentMarks: Bool) {

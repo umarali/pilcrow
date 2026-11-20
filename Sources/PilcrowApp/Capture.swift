@@ -1,12 +1,69 @@
 import AppKit
+import PilcrowCore
 import ScreenCaptureKit
 import os
 
-enum CaptureOutcome: Sendable {
-    case image(CGImage)
-    case permissionNeeded
+enum CaptureFailure: String, Sendable {
+    case permissionNeeded = "permission needed"
     case unavailable
-    case timedOut
+    case cancelled
+    case timedOut = "timed out"
+    case invalidCapture = "capture validation failed"
+}
+
+enum CaptureOutcome: Sendable {
+    case image(CGImage, uptime: TimeInterval)
+    case failed(CaptureFailure)
+}
+
+@MainActor
+final class CaptureTask {
+    private static let timeout: Duration = .seconds(5)
+    private var completion: ((CaptureOutcome) -> Void)?
+    private var capture: Task<Void, Never>?
+    private var deadline: Task<Void, Never>?
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    init(frame: Frame, scale: CGFloat, completion: @escaping (CaptureOutcome) -> Void) {
+        self.completion = completion
+        let expires = ContinuousClock.now + Self.timeout
+        capture = Task { [weak self] in
+            let outcome = await Capture.frame(frame, scale: scale)
+            guard !Task.isCancelled else { return }
+            self?.resolve(ContinuousClock.now < expires ? outcome : .failed(.timedOut))
+        }
+        // ScreenCaptureKit may stay suspended after cancellation. Finish waits for
+        // the resolved outcome, which the deadline supplies even if capture is stuck.
+        deadline = Task { [weak self] in
+            do { try await Task.sleep(until: expires, clock: .continuous) }
+            catch { return }
+            self?.resolve(.failed(.timedOut))
+        }
+    }
+
+    func cancel() {
+        resolve(.failed(.cancelled))
+    }
+
+    func wait() async {
+        guard completion != nil else { return }
+        await withCheckedContinuation {
+            precondition(waiter == nil, "A capture supports one waiter")
+            waiter = $0
+        }
+    }
+
+    private func resolve(_ outcome: CaptureOutcome) {
+        guard let completion else { return }
+        self.completion = nil
+        capture?.cancel()
+        capture = nil
+        deadline?.cancel()
+        deadline = nil
+        completion(outcome)
+        waiter?.resume()
+        waiter = nil
+    }
 }
 
 @MainActor
@@ -39,11 +96,12 @@ enum Capture {
         }
     }
 
-    static func frame(_ geometry: FrameGeometry) async -> CaptureOutcome {
-        guard !Task.isCancelled else { return .unavailable }
+    static func frame(_ frame: Frame, scale: CGFloat) async -> CaptureOutcome {
+        let size = CGSize(width: frame.boundsInPoints.width, height: frame.boundsInPoints.height)
+        guard !Task.isCancelled else { return .failed(.cancelled) }
         guard CGPreflightScreenCaptureAccess() else {
             log.notice("Frame Screen Recording preflight denied")
-            return .permissionNeeded
+            return .failed(.permissionNeeded)
         }
         let content: SCShareableContent
         do {
@@ -51,45 +109,41 @@ enum Capture {
         } catch {
             return failure(at: "SCShareableContent", error: error)
         }
-        guard !Task.isCancelled else { return .unavailable }
-        guard let display = content.displays.first(where: { $0.displayID == geometry.display }) else {
+        guard !Task.isCancelled else { return .failed(.cancelled) }
+        guard let display = content.displays.first(where: { $0.displayID == frame.displayID }) else {
             log.notice("Marked display missing from shareable content")
-            return .unavailable
+            return .failed(.unavailable)
         }
-        guard let screen = NSScreen.screens.first(where: { $0.displayID == geometry.display }),
-              screen.frame.size == geometry.size, screen.backingScaleFactor == geometry.scale else {
+        guard let screen = NSScreen.screens.first(where: { $0.displayID == frame.displayID }),
+              screen.frame.size == size, screen.backingScaleFactor == scale else {
             log.notice("Display geometry changed before capture")
-            return .unavailable
+            return .failed(.unavailable)
         }
 
         let filter = filter(for: display, in: content)
-        // Newly created filters may report incomplete metadata. Use the live display
-        // geometry above and check the image itself before exporting.
-        if filter.contentRect.size != geometry.size { log.notice("Filter content rectangle size differs") }
-        if CGFloat(filter.pointPixelScale) != geometry.scale { log.notice("Filter pixel scale differs") }
+        // Newly created filters may report incomplete metadata. Configure from the
+        // display geometry and let Core validate the resulting image's aspect ratio.
+        if filter.contentRect.size != size { log.notice("Filter content rectangle size differs") }
+        if CGFloat(filter.pointPixelScale) != scale { log.notice("Filter pixel scale differs") }
 
         let configuration = SCStreamConfiguration()
-        configuration.width = geometry.width
-        configuration.height = geometry.height
+        configuration.width = Int((size.width * scale).rounded())
+        configuration.height = Int((size.height * scale).rounded())
         configuration.showsCursor = false
         configuration.captureResolution = .best
-        if let name = CGDisplayCopyColorSpace(geometry.display).name {
+        if let name = CGDisplayCopyColorSpace(frame.displayID).name {
             configuration.colorSpaceName = name
         }
-        guard !Task.isCancelled else { return .unavailable }
-        guard CGPreflightScreenCaptureAccess() else { return .permissionNeeded }
+        guard !Task.isCancelled else { return .failed(.cancelled) }
+        guard CGPreflightScreenCaptureAccess() else { return .failed(.permissionNeeded) }
         let image: CGImage
         do {
             image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
         } catch {
             return failure(at: "captureImage", error: error)
         }
-        guard !Task.isCancelled else { return .unavailable }
-        guard image.width == geometry.width, image.height == geometry.height else {
-            log.notice("Captured image dimensions differ")
-            return .unavailable
-        }
-        return .image(image)
+        guard !Task.isCancelled else { return .failed(.cancelled) }
+        return .image(image, uptime: ProcessInfo.processInfo.systemUptime)
     }
 
     private static func filter(for display: SCDisplay, in content: SCShareableContent) -> SCContentFilter {
@@ -106,14 +160,14 @@ enum Capture {
     }
 
     private static func failure(at step: String, error: Error) -> CaptureOutcome {
-        guard !Task.isCancelled else { return .unavailable }
+        guard !Task.isCancelled else { return .failed(.cancelled) }
         if let streamError = error as? SCStreamError {
             log.notice("\(step, privacy: .public) failed with SCStreamError \(streamError.code.rawValue, privacy: .public)")
-            if streamError.code == .userDeclined { return .permissionNeeded }
+            if streamError.code == .userDeclined { return .failed(.permissionNeeded) }
         } else {
             let error = error as NSError
             log.notice("\(step, privacy: .public) failed with \(error.domain, privacy: .public) code \(error.code, privacy: .public)")
         }
-        return CGPreflightScreenCaptureAccess() ? .unavailable : .permissionNeeded
+        return .failed(CGPreflightScreenCaptureAccess() ? .unavailable : .permissionNeeded)
     }
 }

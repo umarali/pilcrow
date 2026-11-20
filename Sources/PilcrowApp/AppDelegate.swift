@@ -101,9 +101,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleFromMenu() { toggle(.menu) }
 
     private func toggle(_ trigger: AnnotationSession.Trigger) {
-        guard !finishing, !checkingStart else { return }
+        guard !finishing else { return }
         if let session { session.finish(trigger); return }
-        guard permissions.canStart else { return }
+        guard permissions.canStart else {
+            permissions.show()
+            return
+        }
+        guard !checkingStart else { return }
         checkingStart = true
         stateLog.notice("Start requested via \(trigger.rawValue, privacy: .public)")
         permissions.checkForStart { [weak self] state in

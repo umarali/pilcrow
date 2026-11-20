@@ -2,14 +2,9 @@ import Darwin
 import Foundation
 import CoreGraphics
 import ImageIO
+import PilcrowCore
 import UniformTypeIdentifiers
 import os
-
-struct CapturedMarks: Sendable {
-    let image: CGImage
-    let geometry: FrameGeometry
-    let marks: [MarkSnapshot]
-}
 
 @MainActor
 final class ExportStore {
@@ -83,48 +78,139 @@ final class ExportStore {
 
 enum Export {
     private static let log = Logger(subsystem: "org.pilcrow.app", category: "export")
-    private static let maxEdge: CGFloat = 1_600
-    private static let maxPixels: CGFloat = 1_560_000
 
-    enum Failure: Error { case directory, render, encode }
+    enum Failure: Error { case directory, missingSource, render, crop, encode }
 
-    static func write(_ frames: [CapturedMarks], to folder: URL) throws {
-        for (index, frame) in frames.enumerated() {
-            try write(frame, to: folder.appendingPathComponent("frame-\(index + 1).png"))
-        }
+    struct Result: Sendable {
+        let attachments: [String]
+        let messageWritten: Bool
+        let failedFiles: [String]
     }
 
-    private static func write(_ frame: CapturedMarks, to url: URL) throws {
-        let g = frame.geometry
-        let sourceWidth = CGFloat(g.width)
-        let sourceHeight = CGFloat(g.height)
-        let fit = min(1, maxEdge / max(sourceWidth, sourceHeight), (maxPixels / sourceWidth / sourceHeight).squareRoot())
-        let width = max(1, Int((sourceWidth * fit).rounded(.down)))
-        let height = max(1, Int((sourceHeight * fit).rounded(.down)))
-        let xScale = CGFloat(width) / sourceWidth
-        let yScale = CGFloat(height) / sourceHeight
-        let pixelsPerPoint = g.scale * min(xScale, yScale)
+    static func write(session: Session, message: OutgoingMessage, originals: [Frame.ID: CGImage], to folder: URL) -> Result {
+        let frames = Dictionary(uniqueKeysWithValues: session.frames.map { ($0.id, $0) })
+        let marks = Dictionary(grouping: session.liveMarks, by: \.frameID)
+        let frameIDs = Set(message.framePlans.map(\.frameID))
+        var cropsByFrame: [Frame.ID: [CropPlan]] = [:]
+        var written = Set<String>()
+        var failures: [String] = []
 
-        func bitmapContext(in space: CGColorSpace) -> CGContext? {
+        func recordFailure(_ name: String, error: Error) {
+            failures.append(name)
+            log.error("Could not write \(name, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+
+        func writeFile(_ name: String, produce: (URL) throws -> Void) {
+            do {
+                try produce(folder.appendingPathComponent(name))
+                written.insert(name)
+            } catch {
+                recordFailure(name, error: error)
+            }
+        }
+
+        for crop in message.cropPlans {
+            guard let id = crop.sourceFrameID, frameIDs.contains(id) else {
+                recordFailure(crop.cropName, error: Failure.missingSource)
+                continue
+            }
+            cropsByFrame[id, default: []].append(crop)
+        }
+
+        for plan in message.framePlans {
+            autoreleasepool {
+                let crops = cropsByFrame[plan.frameID] ?? []
+                let composite: CGImage
+                do {
+                    guard let frame = frames[plan.frameID], let image = originals[plan.frameID] else {
+                        throw Failure.missingSource
+                    }
+                    // Size the original badge for the smallest vertical scale across all outputs.
+                    var sourceBadgeHeight = ImageLimits.minBadgeHeightPixels * Double(image.height) / Double(plan.outputSize.height)
+                    for crop in crops {
+                        let height = ImageLimits.minBadgeHeightPixels * crop.sourcePixelRect.size.height / Double(crop.outputSize.height)
+                        sourceBadgeHeight = max(sourceBadgeHeight, height)
+                    }
+                    composite = try annotate(image, frame: frame, marks: marks[plan.frameID] ?? [],
+                                             minimumBadgeHeight: ceil(sourceBadgeHeight))
+                } catch {
+                    recordFailure(plan.outputName, error: error)
+                    for crop in crops { recordFailure(crop.cropName, error: error) }
+                    return
+                }
+
+                writeFile(plan.outputName) { url in
+                    try writePNG(composite, size: plan.outputSize, to: url)
+                }
+                for crop in crops {
+                    writeFile(crop.cropName) { url in
+                        let source = crop.sourcePixelRect
+                        // CGImage cropping uses top-left image pixels, the same space as the Core rect.
+                        let rect = CGRect(x: source.origin.x, y: source.origin.y,
+                                          width: source.size.width, height: source.size.height)
+                        guard let region = composite.cropping(to: rect) else { throw Failure.crop }
+                        try writePNG(region, size: crop.outputSize, to: url)
+                    }
+                }
+            }
+        }
+
+        let messageName = "message.md"
+        writeFile(messageName) { url in
+            try Data(message.text.utf8).write(to: url, options: .atomic)
+        }
+        return Result(attachments: message.attachments.filter { written.contains($0) },
+                      messageWritten: written.contains(messageName), failedFiles: failures)
+    }
+
+    private static func annotate(_ image: CGImage, frame: Frame, marks: [Stroke],
+                                 minimumBadgeHeight: CGFloat) throws -> CGImage {
+        let context = try bitmap(width: image.width, height: image.height, colorSpace: image.colorSpace)
+        let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        context.draw(image, in: bounds)
+        let scale = min(bounds.width / frame.boundsInPoints.width, bounds.height / frame.boundsInPoints.height)
+        for mark in marks {
+            MarkRenderer.draw(mark, in: context, bounds: bounds, pixelsPerPoint: scale,
+                              minimumBadgeHeight: minimumBadgeHeight) { point in
+                guard let pixel = Geometry.denormalize(point, frame: frame) else { return nil }
+                return CGPoint(x: pixel.x, y: bounds.height - pixel.y)
+            }
+        }
+        guard let result = context.makeImage() else { throw Failure.render }
+        return result
+    }
+
+    private static func bitmap(width: Int, height: Int, colorSpace: CGColorSpace?) throws -> CGContext {
+        func makeContext(_ space: CGColorSpace) -> CGContext? {
             CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
                       bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
         }
-        let sourceContext = frame.image.colorSpace.flatMap { $0.model == .rgb ? bitmapContext(in: $0) : nil }
-        if sourceContext == nil { log.notice("Burn-in fell back to sRGB") }
-        guard let context = sourceContext ?? bitmapContext(in: CGColorSpace(name: CGColorSpace.sRGB)!) else {
-            throw Failure.render
+        if let colorSpace, colorSpace.model == .rgb, let context = makeContext(colorSpace) {
+            return context
         }
-        context.interpolationQuality = .high
-        context.draw(frame.image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        context.scaleBy(x: xScale, y: yScale)
-        context.concatenate(g.bitmapTransform)
-        for mark in frame.marks {
-            mark.draw(in: context, bounds: CGRect(origin: .zero, size: g.size), pixelsPerPoint: pixelsPerPoint)
+        log.notice("Burn-in fell back to sRGB")
+        guard let fallback = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = makeContext(fallback) else { throw Failure.render }
+        return context
+    }
+
+    private static func writePNG(_ image: CGImage, size: PixelSize, to url: URL) throws {
+        let output: CGImage
+        if image.width == size.width, image.height == size.height {
+            output = image
+        } else {
+            let context = try bitmap(width: size.width, height: size.height, colorSpace: image.colorSpace)
+            context.interpolationQuality = .high
+            context.draw(image, in: CGRect(x: 0, y: 0, width: size.width, height: size.height))
+            guard let resized = context.makeImage() else { throw Failure.render }
+            output = resized
         }
-        guard let composite = context.makeImage(),
-              let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)
+
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil)
         else { throw Failure.encode }
-        CGImageDestinationAddImage(destination, composite, nil)
+        CGImageDestinationAddImage(destination, output, nil)
         guard CGImageDestinationFinalize(destination) else { throw Failure.encode }
+        try (data as Data).write(to: url, options: .atomic)
     }
 }

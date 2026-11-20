@@ -41,12 +41,12 @@ final class CanvasPanel: OverlayPanel {
 
 final class Canvas: NSView {
     weak var session: AnnotationSession?
-    let geometry: FrameGeometry
+    let display: CGDirectDisplayID
 
-    init(_ geometry: FrameGeometry, session: AnnotationSession) {
-        self.geometry = geometry
+    init(display: CGDirectDisplayID, size: CGSize, session: AnnotationSession) {
+        self.display = display
         self.session = session
-        super.init(frame: CGRect(origin: .zero, size: geometry.size))
+        super.init(frame: CGRect(origin: .zero, size: size))
     }
 
     required init?(coder: NSCoder) { nil }
@@ -59,22 +59,34 @@ final class Canvas: NSView {
         // A zero-alpha region can pass hits through a borderless window even when drawing is armed.
         context.setFillColor(CGColor(gray: 0, alpha: 0.01))
         context.fill(dirtyRect)
-        for mark in session?.visibleMarks(on: geometry.display) ?? [] {
-            mark.draw(in: context, bounds: bounds)
+        for mark in session?.visibleMarks(on: display) ?? [] {
+            MarkRenderer.draw(mark, in: context, bounds: bounds) { point in
+                CGPoint(x: bounds.minX + point.x * bounds.width,
+                        y: bounds.minY + (1 - point.y) * bounds.height)
+            }
         }
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard AnnotationSession.isDrawingShift(event.modifierFlags) else { return }
-        session?.begin(on: geometry, at: convert(event.locationInWindow, from: nil))
+        guard AnnotationSession.isDrawingShift(event.modifierFlags),
+              let point = screenPoint(for: event) else { return }
+        session?.begin(on: display, at: point, timestamp: event.timestamp)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        session?.extend(on: geometry.display, to: convert(event.locationInWindow, from: nil))
+        if let point = screenPoint(for: event) {
+            session?.extend(on: display, to: point)
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
-        session?.extend(on: geometry.display, to: convert(event.locationInWindow, from: nil))
-        session?.endStroke(on: geometry.display, at: event.timestamp)
+        if let point = screenPoint(for: event) {
+            session?.extend(on: display, to: point)
+        }
+        session?.endStroke(on: display, at: event.timestamp)
+    }
+
+    private func screenPoint(for event: NSEvent) -> CGPoint? {
+        window?.convertPoint(toScreen: event.locationInWindow)
     }
 }
