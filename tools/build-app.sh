@@ -17,6 +17,8 @@ case "$version" in
 '*) echo 'Could not find exactly one PilcrowCore.version (major.minor.patch).' >&2; exit 1 ;;
 esac
 
+[ -f Resources/AppIcon.icns ] || { echo "Missing Resources/AppIcon.icns; run xcrun swift tools/make-icon.swift." >&2; exit 1; }
+
 xcrun swift build -c "$configuration"
 bin_dir=$(xcrun swift build -c "$configuration" --show-bin-path)
 bundle=build/Pilcrow.app
@@ -25,6 +27,7 @@ mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 cp "$bin_dir/Pilcrow" "$bundle/Contents/MacOS/Pilcrow"
 cp "$bin_dir/pilcrow-mcp" "$bundle/Contents/MacOS/pilcrow-mcp"
 cp Resources/Info.plist "$bundle/Contents/Info.plist"
+cp Resources/AppIcon.icns "$bundle/Contents/Resources/AppIcon.icns"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$bundle/Contents/Info.plist"
 

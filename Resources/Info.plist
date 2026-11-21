@@ -6,6 +6,7 @@
     <key>CFBundleIdentifier</key><string>org.pilcrow.app</string>
     <key>CFBundleName</key><string>Pilcrow</string>
     <key>CFBundleDisplayName</key><string>Pilcrow</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleExecutable</key><string>Pilcrow</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.0.1</string>

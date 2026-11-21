@@ -88,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let quit = menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
         item.menu = menu
+        item.button?.setAccessibilityLabel("Pilcrow")
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(keyboardLayoutChanged),
             name: Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil)
         registerAnnotateHotKey()
@@ -108,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateShortcutDisplay()
         shortcutWarning.title = "Shortcut unavailable " + label
         shortcutWarning.isHidden = true
-        item.button?.title = "¶"
+        updateStatusIcon()
         item.button?.toolTip = "Pilcrow · " + label
         guard !tryRegisterAnnotateHotKey() else { return }
         stateLog.notice("Hotkey registration failed, retrying for up to 3 seconds")
@@ -126,10 +127,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             self.annotateRetry = nil
             self.shortcutWarning.isHidden = false
-            self.item.button?.title = "¶ ⚠"
+            self.updateStatusIcon()
             self.item.button?.toolTip = "Pilcrow · Shortcut unavailable"
             stateLog.notice("Hotkey unavailable")
         }
+    }
+
+    private func updateStatusIcon() {
+        let warning = !shortcutWarning.isHidden
+        item.button?.image = StatusIcon.image(session != nil && !finishing ? .annotating : (warning ? .warning : .idle))
+        item.button?.title = warning ? " ⚠" : ""
+        item.button?.imagePosition = .imageLeft
     }
 
     private func tryRegisterAnnotateHotKey() -> Bool {
@@ -212,11 +220,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hud = nil
         let current = AnnotationSession(exports: exports, outbox: outbox, hotKeys: hotKeys, closing: { [weak self] in
             self?.finishing = true
+            self?.updateStatusIcon()
             self?.start.isEnabled = false
         }, completed: { [weak self] approval, message in
             guard let self else { return }
             self.showResult(message)
             self.session = nil
+            self.updateStatusIcon()
             self.updateShortcutDisplay()
             guard let approval else {
                 self.finishing = false
@@ -260,6 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         })
         if current.open() {
             session = current
+            updateStatusIcon()
             updateShortcutDisplay()
             result.isHidden = true
         } else {
