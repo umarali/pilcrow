@@ -2,13 +2,76 @@ import XCTest
 @testable import PilcrowCore
 
 final class MessageBuilderTests: XCTestCase {
+    func testShapeLabelsOnlyChangeFixListLinesAndDeletedTargetsLoseTheirLink() throws {
+        let frame = makeFrame()
+        let box = PointRect(origin: Point(x: 100, y: 100), size: Size(width: 200, height: 100))
+        let shapes: [MarkShape?] = [.area(.rectangle(box)), .area(.ellipse(box)), .area(.freeform),
+                                    .arrow(from: 1, to: nil), .pin, .mark, nil]
+        let strokes = shapes.enumerated().map { index, shape in
+            Stroke(id: MarkID(rawValue: index + 1), frameID: frame.id, downTime: 1, upTime: 2,
+                   points: [makePoint()], badgeAnchor: makePoint(), shape: shape)
+        }
+        var session = try Session(strokes: strokes, frames: [frame], words: [makeWord("Fix.", 0, 1)])
+        let message = MessageBuilder.build(session: session)
+        XCTAssertEqual(message.text, """
+        Fix. [1] [2] [3] [4] [5] [6] [7]
+
+        - [1] (box) "Fix." → mark-1.png (in frame-1.png)
+        - [2] (oval) → mark-2.png (in frame-1.png)
+        - [3] (area) → mark-3.png (in frame-1.png)
+        - [4] (arrow starting at [1]) → mark-4.png (in frame-1.png)
+        - [5] (point) → mark-5.png (in frame-1.png)
+        - [6] → mark-6.png (in frame-1.png)
+        - [7] → mark-7.png (in frame-1.png)
+        """)
+
+        session.deleteMark(id: 1)
+        let updated = MessageBuilder.build(session: session)
+        XCTAssertTrue(updated.text.contains("- [4] (arrow) → mark-4.png (in frame-1.png)"))
+        XCTAssertFalse(updated.text.contains("[1]"))
+        XCTAssertTrue(updated.attachments.contains("mark-4.png"))
+        XCTAssertFalse(updated.attachments.contains("mark-1.png"))
+        XCTAssertEqual(session.strokes[3].shape, .arrow(from: 1, to: nil))
+        XCTAssertEqual(FixList.build(session: session).items.first { $0.mark == 4 }?.shape, .arrow(from: nil, to: nil))
+    }
+
+    func testArrowDirectionLabelsKeepEachSurvivingLink() throws {
+        let frame = makeFrame()
+        let shapes: [MarkShape] = [.pin, .pin, .arrow(from: nil, to: 2), .arrow(from: 1, to: 2)]
+        let strokes = shapes.enumerated().map { index, shape in
+            Stroke(id: MarkID(rawValue: index + 1), frameID: frame.id, downTime: Double(index), upTime: Double(index + 1),
+                   points: [makePoint()], badgeAnchor: makePoint(), shape: shape)
+        }
+        var session = try Session(strokes: strokes, frames: [frame])
+        let text = MessageBuilder.build(session: session).text
+        XCTAssertTrue(text.contains("- [3] (arrow pointing at [2]) → mark-3.png"))
+        XCTAssertTrue(text.contains("- [4] (arrow from [1] to [2]) → mark-4.png"))
+        session.deleteMark(id: 2)
+        let updated = MessageBuilder.build(session: session).text
+        XCTAssertTrue(updated.contains("- [3] (arrow) → mark-3.png"))
+        XCTAssertTrue(updated.contains("- [4] (arrow starting at [1]) → mark-4.png"))
+    }
+
+    func testEllipseLabelsUseTheFittedAspectRatio() throws {
+        let frame = makeFrame()
+        let dimensions = [Size(width: 125, height: 100), Size(width: 100, height: 126)]
+        let strokes = dimensions.enumerated().map { index, size in
+            Stroke(id: MarkID(rawValue: index + 1), frameID: frame.id, downTime: Double(index),
+                   upTime: Double(index + 1), points: [makePoint()], badgeAnchor: makePoint(),
+                   shape: .area(.ellipse(PointRect(origin: .zero, size: size))))
+        }
+        let text = MessageBuilder.build(session: try Session(strokes: strokes, frames: [frame])).text
+        XCTAssertTrue(text.contains("- [1] (circle)"))
+        XCTAssertTrue(text.contains("- [2] (oval)"))
+    }
+
     func testNamesAndAttachmentsFollowFirstStrokeRatherThanFrameOrTimeOrder() throws {
         let a = makeFrame(), b = makeFrame(), unused = makeFrame()
         let session = try Session(strokes: [makeStroke(3, at: 9, frameID: b.id), makeStroke(4, at: 1, frameID: a.id)], frames: [a, unused, b])
         XCTAssertEqual(MessageBuilder.filenames(for: session), [b.id: "frame-1.png", a.id: "frame-2.png"])
         let message = MessageBuilder.build(session: session)
         XCTAssertEqual(message.attachments, ["frame-1.png", "frame-2.png", "mark-3.png", "mark-4.png"])
-        XCTAssertEqual(message.text, "[4] [3]\n\n- [3] \"\" → mark-3.png (in frame-1.png)\n- [4] \"\" → mark-4.png (in frame-2.png)")
+        XCTAssertEqual(message.text, "[4] [3]\n\n- [3] → mark-3.png (in frame-1.png)\n- [4] → mark-4.png (in frame-2.png)")
     }
 
     func testSingleMarkMatchesSignOutExample() throws {
@@ -37,7 +100,7 @@ final class MessageBuilderTests: XCTestCase {
         let session = try Session(strokes: [makeStroke(1, at: 0, frameID: frame.id), makeStroke(2, at: 1, frameID: frame.id)], frames: [frame])
         let message = MessageBuilder.build(session: session)
         XCTAssertEqual(message.attachments, ["frame-1.png", "mark-1.png", "mark-2.png"])
-        XCTAssertEqual(message.text, "[1] [2]\n\n- [1] \"\" → mark-1.png (in frame-1.png)\n- [2] \"\" → mark-2.png (in frame-1.png)")
+        XCTAssertEqual(message.text, "[1] [2]\n\n- [1] → mark-1.png (in frame-1.png)\n- [2] → mark-2.png (in frame-1.png)")
     }
 
     func testPendingCaptureIsNamedReportedAndNotAttached() throws {
@@ -47,7 +110,7 @@ final class MessageBuilderTests: XCTestCase {
         let message = MessageBuilder.build(session: session)
         XCTAssertEqual(message.attachments, ["frame-2.png", "mark-2.png"])
         XCTAssertEqual(message.missingImages, [pending.id])
-        XCTAssertEqual(message.text, "[1] [2]\n\n- [1] \"\" → mark-1.png (in frame-1.png) (screenshot pending)\n- [2] \"\" → mark-2.png (in frame-2.png)")
+        XCTAssertEqual(message.text, "[1] [2]\n\n- [1] → mark-1.png (in frame-1.png) (screenshot pending)\n- [2] → mark-2.png (in frame-2.png)")
         try session.completeFrame(id: pending.id, pixelSize: Size(width: 200, height: 200), capturedAt: 2)
         XCTAssertEqual(MessageBuilder.build(session: session).attachments, ["frame-1.png", "frame-2.png", "mark-1.png", "mark-2.png"])
         XCTAssertTrue(MessageBuilder.build(session: session).missingImages.isEmpty)

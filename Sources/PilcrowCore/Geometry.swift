@@ -77,3 +77,26 @@ public enum ImageLimits {
     public static let maxPixels: Double = 1_560_000
     public static let minBadgeHeightPixels: Double = 24
 }
+
+/// Badge metrics shared by rendering, pin hit testing and arrow crop planning.
+public enum MarkBadgeGeometry {
+    public static let height = 20.0
+    public static let pinGap = 6.0
+    public static let arrowGap = 4.0
+
+    public static func numberedBadgeWidth(id: MarkID, height: Double) -> Double {
+        // Reserve 7 pt per Helvetica Bold numeral, plus 5 pt padding on each side.
+        max(height, Double(7 * String(id.rawValue).count + 10) * height / Self.height)
+    }
+
+    /// Uses top-left coordinates local to the canvas. The renderer can scale the export badge.
+    public static func pinBadge(at dot: Point, in canvas: Size, id: MarkID,
+                                height: Double = height, gap: Double = pinGap) -> PointRect {
+        let width = numberedBadgeWidth(id: id, height: height)
+        let right = dot.x + gap
+        let left = right + width <= canvas.width ? right : dot.x - gap - width
+        let x = max(0, min(left, canvas.width - width))
+        let y = max(0, min(dot.y - height / 2, canvas.height - height))
+        return PointRect(origin: Point(x: x, y: y), size: Size(width: width, height: height))
+    }
+}

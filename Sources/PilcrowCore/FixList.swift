@@ -34,23 +34,40 @@ public struct FixItem: Sendable, Equatable, Hashable, Codable {
     public let outputSize: PixelSize?
     public let unavailableReason: UnavailableReason?
     public let words: String
+    public let shape: MarkShape?
 }
 
 /// A deterministic export description. Core plans crops; the App produces the image files.
 public struct FixList: Sendable, Equatable, Codable {
+    private static let minimumCropHeight = 200.0
+
     public let transcript: String
     public let items: [FixItem]
 
     public static func build(session: Session, onlyFinal: Bool = false) -> FixList {
-        let tokens = Aligner.place(words: session.words, strokes: session.strokes, onlyFinal: onlyFinal)
+        let words = Aligner.sortedWords(session.words, onlyFinal: onlyFinal)
+        let tokens = Aligner.place(sortedWords: words, sortedStrokes: Aligner.sortedLiveStrokes(session.strokes),
+                                   toleratesWordStarts: true)
+        let cleanup = TranscriptCleanup(sortedWords: words, languageCode: session.transcriptLanguageCode)
+        let contexts = Aligner.contexts(words: cleanup.words, strokes: session.strokes,
+                                        hasText: cleanup.cleanedText.map { !$0.isEmpty })
         let names = MessageBuilder.filenames(for: session)
         let frames = Dictionary(uniqueKeysWithValues: session.frames.map { ($0.id, $0) })
-        let items = session.liveMarks.map { stroke -> FixItem in
+        let live = session.liveMarks
+        let liveFrames = Dictionary(uniqueKeysWithValues: live.map { ($0.id, $0.frameID) })
+        let items = live.map { stroke -> FixItem in
             let crop = crop(for: stroke, frame: frames[stroke.frameID])
+            let shape: MarkShape?
+            if case .arrow(let from, let to) = stroke.shape {
+                shape = .arrow(from: from.flatMap { liveFrames[$0] == stroke.frameID ? $0 : nil },
+                               to: to.flatMap { liveFrames[$0] == stroke.frameID ? $0 : nil })
+            } else {
+                shape = stroke.shape
+            }
             return FixItem(mark: stroke.id, frameID: stroke.frameID,
                            imageName: names[stroke.frameID] ?? "screenshot unavailable", cropName: "mark-\(stroke.id.rawValue).png",
                            cropRect: crop.rect, outputSize: crop.size, unavailableReason: crop.reason,
-                           words: context(for: stroke.id, tokens: tokens))
+                           words: cleanup.text(for: contexts[stroke.id, default: []]), shape: shape)
         }
         return FixList(transcript: TranscriptRenderer.render(tokens: tokens), items: items)
     }
@@ -65,76 +82,44 @@ public struct FixList: Sendable, Equatable, Codable {
             case .invalidGeometry: reason = " (crop not available: invalid geometry)"
             case nil: reason = ""
             }
-            return "- [\(item.mark.rawValue)] \"\(TextSanitizer.markdownQuoted(item.words))\" → \(item.cropName) (in \(item.imageName))\(reason)"
+            let kind: String
+            switch item.shape {
+            case .pin: kind = " (point)"
+            case .area(.rectangle): kind = " (box)"
+            case .area(.ellipse(let bounds)):
+                let longSide = max(bounds.size.width, bounds.size.height)
+                let shortSide = min(bounds.size.width, bounds.size.height)
+                kind = longSide / shortSide <= 1.25 ? " (circle)" : " (oval)"
+            case .area(.freeform): kind = " (area)"
+            case .arrow(let from?, let to?): kind = " (arrow from [\(from.rawValue)] to [\(to.rawValue)])"
+            case .arrow(let from?, nil): kind = " (arrow starting at [\(from.rawValue)])"
+            case .arrow(nil, let to?): kind = " (arrow pointing at [\(to.rawValue)])"
+            case .arrow(nil, nil): kind = " (arrow)"
+            case .mark, nil: kind = ""
+            }
+            let words = item.words.isEmpty ? "" : " \"\(TextSanitizer.markdownQuoted(item.words))\""
+            return "- [\(item.mark.rawValue)]\(kind)\(words) → \(item.cropName) (in \(item.imageName))\(reason)"
         }.joined(separator: "\n")
         return [TextSanitizer.markdownTranscript(transcript), list].filter { !$0.isEmpty }.joined(separator: "\n\n")
-    }
-
-    private static func context(for mark: MarkID, tokens: [TranscriptToken]) -> String {
-        // Flatten recognition runs only after alignment, so a run retains its original timed slot.
-        var words: [String] = []
-        var marks: [(id: MarkID, slot: Int)] = []
-        for token in tokens {
-            switch token {
-            case .word(let text): words += text.split(whereSeparator: \.isWhitespace).map(String.init)
-            case .mark(let id): marks.append((id, words.count))
-            }
-        }
-        guard let index = marks.firstIndex(where: { $0.id == mark }), !words.isEmpty else { return "" }
-        let slot = marks[index].slot
-        let endsSentence: (Int) -> Bool = { index in
-            guard let last = words[index].last else { return false }
-            if "?!…".contains(last) { return true }
-            guard last == "." else { return false }
-            guard index + 1 < words.count else { return true }
-            guard let next = words[index + 1].first else { return false }
-            return next.isUppercase || next.isNumber
-        }
-        // A boundary slot belongs to the word on its left, except slot zero.
-        let anchor = max(0, slot - 1)
-        let sentenceStart = (0..<anchor).last(where: endsSentence).map { $0 + 1 } ?? 0
-        let sentenceEnd = (anchor..<words.count).first(where: endsSentence).map { $0 + 1 } ?? words.count
-        let sharesSentence = marks.enumerated().contains { otherIndex, other in
-            let otherAnchor = max(0, other.slot - 1)
-            return otherIndex != index && other.slot != slot && (sentenceStart..<sentenceEnd).contains(otherAnchor)
-        }
-        if sentenceEnd - sentenceStart <= 25 && !sharesSentence {
-            return words[sentenceStart..<sentenceEnd].joined(separator: " ")
-        }
-        // Equal-slot marks never bound one another.
-        let previous = marks.map(\.slot).filter { $0 < slot }.max() ?? sentenceStart
-        let next = marks.map(\.slot).filter { $0 > slot }.min() ?? sentenceEnd
-        let left = max(sentenceStart, slot - 12, previous)
-        let right = min(sentenceEnd, slot + 6, next)
-        // For slot > 0, left <= slot - 1 < slot <= right; at slot 0, left is 0 and right is at least 1.
-        return words[left..<right].joined(separator: " ")
     }
 
     private static func crop(for stroke: Stroke, frame: Frame?) -> (rect: PixelRect?, size: PixelSize?, reason: FixItem.UnavailableReason?) {
         guard let frame else { return (nil, nil, .missingFrame) }
         guard !frame.captureFailed else { return (nil, nil, .failedFrame) }
         guard frame.isComplete, let pixels = frame.pixelSize else { return (nil, nil, .pendingFrame) }
-        let points = stroke.points + [stroke.badgeAnchor]
-        guard points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return (nil, nil, .invalidGeometry) }
-        guard let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
-              let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() else {
-            return (nil, nil, .invalidGeometry)
-        }
-        // Infinite intermediate spans are deliberate: huge finite points then request the full frame.
         let bounds = frame.boundsInPoints
-        let lowX = minX * bounds.width, highX = maxX * bounds.width
-        let lowY = minY * bounds.height, highY = maxY * bounds.height
-        let finiteX = lowX.isFinite && highX.isFinite
-        let finiteY = lowY.isFinite && highY.isFinite
-        let spanX = finiteX ? highX - lowX : (maxX - minX) * bounds.width
-        let spanY = finiteY ? highY - lowY : (maxY - minY) * bounds.height
-        let padding = max(48, 0.25 * max(spanX, spanY))
-        let width = min(bounds.width, max(320, spanX + 2 * padding))
-        let height = min(bounds.height, max(200, spanY + 2 * padding))
-        let centerX = finiteX ? lowX / 2 + highX / 2 : (minX / 2 + maxX / 2) * bounds.width
-        let centerY = finiteY ? lowY / 2 + highY / 2 : (minY / 2 + maxY / 2) * bounds.height
-        let x = min(bounds.width - width, max(0, centerX - width / 2))
-        let y = min(bounds.height - height, max(0, centerY - height / 2))
+        guard let box = cropBox(for: stroke, frameSize: bounds) else { return (nil, nil, .invalidGeometry) }
+        let badgePadding: Double
+        if case .arrow = stroke.shape {
+            badgePadding = arrowBadgePadding(id: stroke.id, frameSize: bounds, pixels: pixels)
+        } else {
+            badgePadding = 0
+        }
+        let padding = max(48, 0.25 * max(box.size.width, box.size.height), badgePadding)
+        let width = min(bounds.width, max(320, box.size.width + 2 * padding))
+        let height = min(bounds.height, max(minimumCropHeight, box.size.height + 2 * padding))
+        let x = min(bounds.width - width, max(0, box.center.x - width / 2))
+        let y = min(bounds.height - height, max(0, box.center.y - height / 2))
         // Round outwards so source pixels touched by the requested rectangle are retained.
         let scaleX = pixels.width / bounds.width, scaleY = pixels.height / bounds.height
         let origin = Point(x: (x * scaleX).rounded(.down), y: (y * scaleY).rounded(.down))
@@ -145,5 +130,49 @@ public struct FixList: Sendable, Equatable, Codable {
             return (nil, nil, .invalidGeometry)
         }
         return (PixelRect(origin: origin, size: size), PixelSize(width: output.width, height: output.height), nil)
+    }
+
+    private static func arrowBadgePadding(id: MarkID, frameSize: Size, pixels: Size) -> Double {
+        let scaleY = pixels.height / frameSize.height
+        let scale = min(pixels.width / frameSize.width, scaleY)
+        guard let frameOutput = Geometry.fitPixels(width: pixels.width, height: pixels.height,
+                                                   maxLongEdge: ImageLimits.maxLongEdge,
+                                                   maxPixels: ImageLimits.maxPixels) else { return 0 }
+        // A crop has at least the frame's scale before rounding. Allow for losing one
+        // output row when floored, using the shortest crop the planner can produce.
+        let frameOutputHeight = Double(frameOutput.height)
+        let minimumOutputHeight = max(1, (min(1, minimumCropHeight / frameSize.height) * frameOutputHeight).rounded(.down))
+        let maximumShrink = pixels.height / frameOutputHeight * (1 + 1 / minimumOutputHeight)
+        let height = max(MarkBadgeGeometry.height * scale,
+                         ceil((ImageLimits.minBadgeHeightPixels + 1) * maximumShrink))
+        let width = MarkBadgeGeometry.numberedBadgeWidth(id: id, height: height)
+        // The diagonal covers the badge's reach from its anchor in any direction.
+        // At an edge, also allow room to clear the 10 pt head and its barbs.
+        return hypot(width, height) / scale + MarkBadgeGeometry.arrowGap + 20
+    }
+
+    private static func cropBox(for stroke: Stroke, frameSize: Size) -> (center: Point, size: Size)? {
+        if case .area(let area) = stroke.shape, let box = area.fittedBounds {
+            guard box.isValid else { return nil }
+            let center = Point(x: box.origin.x + box.size.width / 2, y: box.origin.y + box.size.height / 2)
+            return (center, box.size)
+        }
+        let points = stroke.shape == .pin ? [stroke.badgeAnchor] : Array(stroke.renderedPoints) + [stroke.badgeAnchor]
+        guard points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
+        guard let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
+              let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() else {
+            return nil
+        }
+        // Infinite intermediate spans are deliberate: huge finite points then request the full frame.
+        let bounds = frameSize
+        let lowX = minX * bounds.width, highX = maxX * bounds.width
+        let lowY = minY * bounds.height, highY = maxY * bounds.height
+        let finiteX = lowX.isFinite && highX.isFinite
+        let finiteY = lowY.isFinite && highY.isFinite
+        let spanX = finiteX ? highX - lowX : (maxX - minX) * bounds.width
+        let spanY = finiteY ? highY - lowY : (maxY - minY) * bounds.height
+        let centerX = finiteX ? lowX / 2 + highX / 2 : (minX / 2 + maxX / 2) * bounds.width
+        let centerY = finiteY ? lowY / 2 + highY / 2 : (minY / 2 + maxY / 2) * bounds.height
+        return (Point(x: centerX, y: centerY), Size(width: spanX, height: spanY))
     }
 }

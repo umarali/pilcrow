@@ -1,8 +1,8 @@
 # Status
 
-What has been done, and how it was checked. Only these words are used: **live-verified** (run by a person on a real Mac), **unit-tested**, **built**, **untested**.
+What has been done, and how it was checked. Verification labels: **live-verified** (run by a person on a real Mac), **unit-tested**, **built**, **probed with throwaway scripts**, **untested**. Probes are disposable checks outside the test suite.
 
-Last updated 2026-11-20.
+Last updated 2026-11-21.
 
 | Area | State |
 |---|---|
@@ -12,20 +12,33 @@ Last updated 2026-11-20.
 | Core: speech-to-mark alignment (`Aligner`) | unit-tested on synthetic words and strokes only; real speech timing untested |
 | Core: transcript rendering, message builder | unit-tested |
 | Core: geometry (point flip, scale, size caps) | unit-tested; caps 1600 px / 1.56 MP and 24 px badges (D-17.5) |
-| App: menu-bar item, hotkey (default ⇧⌥⌘J), overlay panels | built; wave 1 drawing live-verified as described below |
+| App: menu-bar item, original hotkey, overlay panels | built; wave 1 drawing live-verified as described below |
+| App: D-26 minimal pill, pointer ring/hint, receipt HUD and configurable ⌥D / ⌘Z shortcuts | built; D-26 review fixes: character-based layout defaults/display, protected shortcuts, recorder release/probe/restore, immediate ⇧ mouse capture with a 200 ms ring delay, modifier-aware layout characters (Russian, Dvorak – QWERTY ⌘), mark-only Undo registration, accessibility announcements and safer Discard placement. 321 tests pass, 0 failures, including 30 added UI regression tests and a disposable discard-storage check. Normal and clean strict-concurrency builds: 0 warnings. Fable review and human live checks pending |
 | App: screen capture excluding Pilcrow's windows (5 s timeout) and private export cleanup | built; wave 1 capture and PNG export live-verified as described below |
 | App: live test 2026-11-20, Screen Recording not granted | **failed**: a modal permission alert after the first stroke locked out the mouse (see D-15). Fix built (0 warnings) and reviewed by Opus 5.5; awaiting a live re-test |
 | App: live test 2 (2026-11-20 22:57, wave 1 build, signed `Pilcrow.app`, Screen Recording granted) | **passed**: hotkey start → permission probe passed → overlay → hold-⇧ drawing (2 marks) → capture on the first stroke (display 2, overlay excluded) → Esc finish → 1 PNG, 1600×900, opaque, display colour profile kept, export folder mode 700, badges 1 and 2 legible and correctly placed. Not exercised: denial and Quit & Reopen flows, ⌘Z undo, new pass after click/scroll, multiple displays, full-screen Space, Dock changes |
 | App: live test 3 (2026-11-21 00:17, wave 2 App↔Core wiring, signed `Pilcrow.app`) | **passed**: permission kept across a rebuild (stable signing identity); two displays (2× laptop, 1× external) each captured on first stroke; undo removed marks 2 and 3 and numbering continued at 4 (no reuse); export: `frame-1.png` 1549×1006 and `frame-2.png` 1600×900 (opaque, capped), `mark-1.png` 641×667 (320×333 pt at 2×) and `mark-4.png` 321×201 (320×200 pt at 1×), `message.md` with the per-mark list; marks and badges correctly placed in frames and crops; overlay excluded; folder mode 700. Not exercised: new pass after click/scroll, denied/timeout captures, full-screen Space |
-| App: Core session wiring for timing, capture outcomes, drawing, undo and clear pass | built; wave 2 live test pending |
+| App: Core session wiring for timing, capture outcomes, drawing and undo | built; wave 2 live test pending |
 | App: sealed Core message export, annotated originals, per-mark crop PNGs and `message.md` | built; wave 2 live test pending |
-| Speech and word timing | not started (word timestamps from SpeechAnalyzer are unverified, see D-06) |
-| Handoff to an agent | not started |
+| App: on-device speech and input changes | Analyzer warmup, a 15-second input buffer, and a separate latency-adjusted anchor after a route change or sample gap. Live timing, Bluetooth handoff and the Finish audio tail are pending (D-17.6, D-23). |
+| D-27 voice transcript and per-mark words | Final follow-up to Fable 5.2's candidate is unit-tested and built. Thinking pauses keep one instruction together, silent marks no longer take individual words during repair, and a short silent run can share a whole sentence. Redraw inherits narration that continued after the undone pen-up. Swift 6.2.1 full suite passed 340 tests with 0 failures, including the sweep through 10 s. Clean normal and strict-concurrency builds completed with 0 warnings. Human voice checks are pending. See [D-27 later](backlog-m2.md#d-27-later). |
+| App: voice timing and buffering probes | 26 synthetic checks covered attributed text, uptime mapping with a 35 ms latency, sample gaps, buffer overflow and PCM resampling. Live microphone and analyzer behavior await a human test. |
+| App: voice setup and pill | One Turn on action for microphone access and the on-device model. The pill stays quiet until voice is ready to start. Permission prompts, download progress and pill behavior await a live run. |
+| App: D-22 clipboard-first Finish and one-row HUD | built; D-26 supersedes the HUD actions and four-second Undo. Clipboard/focus/full-screen/latency live checks and orchestrator review pending |
+| App: on-demand Review and Copy again | built: 800 × 640 pt crop grid and Copy / Claude Code / Codex / MCP / Show in Finder / Discard toolbar; per-agent first-use folder sheets and Change project… menus; Esc/⌘W hide Pilcrow; live focus and toolbar layout checks pending |
+| App: remembered terminal shortcut, per-agent folders and executable lookup | built and probed: lifetime cache per command/shell, Review/failure refresh, sentinel-isolated startup output, zsh/bash alias/function shadowing, executable-path sends, quoting, comma paths and removed-project failure; real CLI acceptance pending |
+| App: private outbox, recovery and sticky MCP availability | built and probed with disposable storage: direct export, manifest-last publication, retained recovery paths on preparation/publication failure, MCP stays visible after later sends; real pasteboard and Terminal handoff pending |
+| App: export/outbox actors, direct CGImage thumbnails, retention and Clear recent captures | built and probed: PNG inode/bytes unchanged by normal publication, no thumbnail encode/decode round trip, export/Undo locks survive pruning, recovery survives later sessions and Quit cleanup; live responsiveness pending |
+| App: ignore undo during a drag; clear pill error on successful pen-down | built; not live-tested; awaiting orchestrator review |
+| App: prior delivery probes before D-22 | probed with throwaway scripts (66 checks), not in the test suite; includes zsh/bash stub argv and cwd, quoting, disposable storage, frozen attachment bytes, nonfatal retention errors, and timeout process-group cleanup. No AppKit or real agent run; Core suite: 161 tests, 0 failures; full normal and strict-concurrency builds: 0 warnings; orchestrator review and live test pending |
+| D-22 redesign verification, 2026-11-21 | Normal build and a clean `-strict-concurrency=complete` build: 0 warnings. `./tools/test.sh`: 180 tests, 0 failures, 0 warnings. A disposable linker initializer redirects test fixtures into `.build` because the test script strips TMPDIR; normal products are rebuilt afterwards. 52 additional disposable checks passed for real PNG export/storage, publication failure/recovery, retained file identity, MCP stickiness, Discard/Undo staging, command cache, alias/function/no-newline detection and stub-agent argv/cwd. Probes/initializer removed. No App launch, real pasteboard, permissions, audio, screen capture or real agents. Orchestrator review and the expanded human checklist remain pending. |
+| D-25 automatic shapes | **Round-2 baseline. D-28 supersedes these fits.** Round-2 fits restored after Fable 5.2 rejected the roughness-gated loose fallback; independent ≤16 pt hooks retained and long-tail closure failure restored to plain marks. Schema-2 local stroke recording/replay preserves full precision, original counts, frame size/display scale and the rules version, with explicit uniform decimation above 5,000 points and a 5 MB capture cap. Optional recording/copy failures cannot block delivery or enter the files-failed count. Full suite: 321 tests, 0 failures, including 49 recognizer, two recording/replay and eight export/storage tests; six retained negative classes each 0/100 tidy, reviewer thin boxes 139/300 rectangles. Normal and clean strict-concurrency builds: 0 warnings. No app launch or permissions. |
+| D-28 forgiving shapes and arrows | Both round-3 captures replay through Session. Capture A uses visible numbers 1–9 and its second stroke now links from [1] to the later box [3]. Fit comparison handles rounded boxes and ovals, and long tails keep their ink. Heads can use one stroke, a separate V or two separate barbs. A head at pen-down reverses the arrow. The overlay and export draw badges over all ink. The outbox keeps schema-3 stroke data and optional `debug/voice.json`. Verification used automated tests and the recorded strokes. |
 | CI workflow | untested (never run on GitHub) |
 | Signing and release | not started |
 
 ## Next
 
 1. A person runs the [Wave 2 wiring checks](live-test-m1.md#wave-2-wiring) and the remaining Screen Recording, full-screen and mixed-Retina checks.
-2. Build the approval preview, then direct delivery as described in the [roadmap](roadmap.md).
-3. Check SpeechAnalyzer word timing for D-06.
+2. The orchestrator reviews D-22, then a person runs [Finish flow (D-22)](live-test-m1.md#finish-flow-d-22). HUD, pasteboard and Terminal behavior have not been live-tested.
+3. A person runs the [voice checks](live-test-m1.md#voice), including word timing for D-06.

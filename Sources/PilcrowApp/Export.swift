@@ -6,15 +6,20 @@ import PilcrowCore
 import UniformTypeIdentifiers
 import os
 
-@MainActor
-final class ExportStore {
+actor ExportStore {
     private let files = FileManager.default
-    private let temporary = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    private let temporary: URL
     private let log = Logger(subsystem: "org.pilcrow.app", category: "export")
     private var folders: [URL: Int32] = [:]
+    private var retained = Set<URL>()
+    private var staged: [URL: URL] = [:]
+
+    init(temporary: URL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)) {
+        self.temporary = temporary
+    }
 
     func prepare() throws -> URL {
-        let folder = temporary.appendingPathComponent("pilcrow-" + UUID().uuidString, isDirectory: true)
+        let folder = temporary.appendingPathComponent("pilcrow-recovery-" + UUID().uuidString, isDirectory: true)
         try files.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         guard let descriptor = lockOwnedDirectory(folder) else { throw Export.Failure.directory }
         folders[folder] = descriptor
@@ -22,13 +27,52 @@ final class ExportStore {
     }
 
     func keepOnly(_ latest: URL?) {
-        for folder in Array(folders.keys) where folder != latest { discard(folder) }
+        for folder in Array(folders.keys) where folder != latest && !retained.contains(folder) { discard(folder) }
     }
 
     func discard(_ folder: URL) {
-        guard let descriptor = folders[folder], remove(folder, lockedBy: descriptor) else { return }
+        guard let descriptor = folders[folder], remove(staged[folder] ?? folder, lockedBy: descriptor) else { return }
+        staged.removeValue(forKey: folder)
+        retained.remove(folder)
         folders.removeValue(forKey: folder)
         close(descriptor)
+    }
+
+    /// Recovery exports survive new sessions and Quit. Only explicit Discard removes them.
+    func retain(_ folder: URL) { retained.insert(folder) }
+
+    func beginDiscard(_ folder: URL) throws {
+        guard folders[folder] != nil else { throw DeliveryFailure("Couldn’t discard capture") }
+        let hidden = folder.deletingLastPathComponent().appendingPathComponent(".discarded-" + folder.lastPathComponent)
+        try files.moveItem(at: folder, to: hidden)
+        staged[folder] = hidden
+    }
+
+    func undoDiscard(_ folder: URL) throws {
+        guard let hidden = staged[folder] else { return }
+        try files.moveItem(at: hidden, to: folder)
+        staged.removeValue(forKey: folder)
+    }
+
+    func recover(_ approval: ApprovalExport) throws -> ApprovalExport {
+        let folder: URL
+        if folders[approval.folder] != nil {
+            folder = approval.folder
+            retain(folder)
+        } else {
+            folder = try prepare()
+            // Keep even a partial recovery on error; the original is also retained.
+            retain(folder)
+            for (attachment, bytes) in zip(approval.attachments, approval.imageData) {
+                try bytes.write(to: folder.appendingPathComponent(attachment.name), options: .atomic)
+            }
+        }
+        if folder != approval.folder { Export.copyCalibrationData(from: approval.folder, to: folder) }
+        let recovered = approval.relocated(to: folder)
+        try Data(DeliveryText.message(approvedText: recovered.text,
+            imagePaths: recovered.imageURLs(in: folder).map(\.path)).utf8)
+            .write(to: folder.appendingPathComponent("message-for-agent.md"), options: .atomic)
+        return recovered
     }
 
     func removeStale() {
@@ -77,27 +121,34 @@ final class ExportStore {
 }
 
 enum Export {
+    static let strokeDataLimit = 5_000_000
+    static let voiceDataLimit = 999_999
     private static let log = Logger(subsystem: "org.pilcrow.app", category: "export")
 
     enum Failure: Error { case directory, missingSource, render, crop, encode }
 
     struct Result: Sendable {
         let attachments: [String]
+        let imageData: [String: Data]
+        let thumbnails: [String: CGImage]
         let messageWritten: Bool
         let failedFiles: [String]
     }
 
-    static func write(session: Session, message: OutgoingMessage, originals: [Frame.ID: CGImage], to folder: URL) -> Result {
+    static func write(session: Session, message: OutgoingMessage, originals: [Frame.ID: CGImage], to folder: URL,
+                      voiceResults: VoiceRecording.Results = VoiceRecording.Results()) -> Result {
         let frames = Dictionary(uniqueKeysWithValues: session.frames.map { ($0.id, $0) })
         let marks = Dictionary(grouping: session.liveMarks, by: \.frameID)
         let frameIDs = Set(message.framePlans.map(\.frameID))
         var cropsByFrame: [Frame.ID: [CropPlan]] = [:]
         var written = Set<String>()
         var failures: [String] = []
+        var imageData: [String: Data] = [:]
+        var thumbnails: [String: CGImage] = [:]
 
         func recordFailure(_ name: String, error: Error) {
             failures.append(name)
-            log.error("Could not write \(name, privacy: .public): \(String(describing: error), privacy: .public)")
+            log.error("Export file write failed")
         }
 
         func writeFile(_ name: String, produce: (URL) throws -> Void) {
@@ -126,9 +177,11 @@ enum Export {
                         throw Failure.missingSource
                     }
                     // Size the original badge for the smallest vertical scale across all outputs.
-                    var sourceBadgeHeight = ImageLimits.minBadgeHeightPixels * Double(image.height) / Double(plan.outputSize.height)
+                    // Leave one output pixel for antialiasing at fractional badge positions.
+                    let targetBadgeHeight = ImageLimits.minBadgeHeightPixels + 1
+                    var sourceBadgeHeight = targetBadgeHeight * Double(image.height) / Double(plan.outputSize.height)
                     for crop in crops {
-                        let height = ImageLimits.minBadgeHeightPixels * crop.sourcePixelRect.size.height / Double(crop.outputSize.height)
+                        let height = targetBadgeHeight * crop.sourcePixelRect.size.height / Double(crop.outputSize.height)
                         sourceBadgeHeight = max(sourceBadgeHeight, height)
                     }
                     composite = try annotate(image, frame: frame, marks: marks[plan.frameID] ?? [],
@@ -140,7 +193,7 @@ enum Export {
                 }
 
                 writeFile(plan.outputName) { url in
-                    try writePNG(composite, size: plan.outputSize, to: url)
+                    imageData[plan.outputName] = try writePNG(composite, size: plan.outputSize, to: url)
                 }
                 for crop in crops {
                     writeFile(crop.cropName) { url in
@@ -149,7 +202,9 @@ enum Export {
                         let rect = CGRect(x: source.origin.x, y: source.origin.y,
                                           width: source.size.width, height: source.size.height)
                         guard let region = composite.cropping(to: rect) else { throw Failure.crop }
-                        try writePNG(region, size: crop.outputSize, to: url)
+                        let data = try writePNG(region, size: crop.outputSize, to: url)
+                        imageData[crop.cropName] = data
+                        thumbnails[crop.cropName] = try? thumbnail(region)
                     }
                 }
             }
@@ -159,8 +214,103 @@ enum Export {
         writeFile(messageName) { url in
             try Data(message.text.utf8).write(to: url, options: .atomic)
         }
+        // Calibration is optional and never contributes to user-visible failures.
+        do {
+            let data = try strokeData(session: session)
+            try data.write(to: folder.appendingPathComponent("strokes.json"), options: .atomic)
+        } catch {
+            log.error("Skipped local stroke recording: encoding, size limit or write failure")
+        }
+        do {
+            let data = try JSONEncoder().encode(VoiceRecording(session: session, results: voiceResults))
+            guard data.count <= voiceDataLimit else { throw Failure.encode }
+            let debug = try makeDebugDirectory(in: folder)
+            try data.write(to: debug.appendingPathComponent("voice.json"), options: .atomic)
+        } catch {
+            log.error("Skipped local voice recording: encoding, size limit or write failure")
+        }
         return Result(attachments: message.attachments.filter { written.contains($0) },
+                      imageData: imageData, thumbnails: thumbnails,
                       messageWritten: written.contains(messageName), failedFiles: failures)
+    }
+
+    /// Local calibration evidence only. Attachment lists and clipboard messages
+    /// are built separately from PNG plans and never include this data.
+    static func strokeData(session: Session) throws -> Data {
+        let frames = Dictionary(uniqueKeysWithValues: session.frames.map { ($0.id, $0) })
+        let live = Set(session.liveMarks.map(\.id))
+        let records = session.strokes.compactMap { mark -> StrokeRecording.Record? in
+            guard !mark.isDeleted, live.contains(mark.absorbedInto ?? mark.id),
+                  let frame = frames[mark.frameID] else { return nil }
+            return StrokeRecording.Record(stroke: mark, frame: frame)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(StrokeRecording(strokes: records))
+        guard data.count <= strokeDataLimit else { throw Failure.encode }
+        return data
+    }
+
+    /// Optional local evidence must never block recovery or publication. Copy
+    /// the known regular file without loading it back into process memory.
+    static func copyCalibrationData(from source: URL, to destination: URL) {
+        copyCalibrationFile("strokes.json", limit: strokeDataLimit, from: source, to: destination)
+        let debug = source.appendingPathComponent("debug", isDirectory: true)
+        let descriptor = open(debug.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        if descriptor >= 0 {
+            defer { close(descriptor) }
+            var info = stat()
+            guard fstat(descriptor, &info) == 0, info.st_uid == geteuid() else { return }
+            copyCalibrationFile("voice.json", limit: voiceDataLimit, from: debug, to: destination,
+                                directoryDescriptor: descriptor, intoDebug: true)
+        } else if errno == ENOENT {
+            // Recovery can still publish an export made before voice data moved.
+            copyCalibrationFile("voice.json", limit: voiceDataLimit, from: source, to: destination, intoDebug: true)
+        }
+    }
+
+    private static func makeDebugDirectory(in folder: URL) throws -> URL {
+        let debug = folder.appendingPathComponent("debug", isDirectory: true)
+        if mkdir(debug.path, 0o700) != 0 {
+            var info = stat()
+            guard errno == EEXIST, lstat(debug.path, &info) == 0,
+                  info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid() else { throw Failure.encode }
+        }
+        return debug
+    }
+
+    private static func copyCalibrationFile(_ name: String, limit: Int, from source: URL, to destination: URL,
+                                            directoryDescriptor: Int32? = nil, intoDebug: Bool = false) {
+        let sourceURL = source.appendingPathComponent(name)
+        let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+        let descriptor = directoryDescriptor.map { openat($0, name, flags) } ?? open(sourceURL.path, flags)
+        if descriptor < 0 {
+            if errno != ENOENT { log.error("Skipped local calibration copy: source unavailable") }
+            return // Includes exports made before calibration recording.
+        }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == geteuid(), info.st_size >= 0, info.st_size <= limit else {
+            log.error("Skipped local calibration copy: invalid source or size limit")
+            return
+        }
+        do {
+            let folder = intoDebug ? try makeDebugDirectory(in: destination) : destination
+            let targetURL = folder.appendingPathComponent(name)
+            try FileManager.default.copyItem(at: sourceURL, to: targetURL)
+            // Reject a link/replacement raced into the path while copying.
+            var named = stat(), copied = stat()
+            guard lstat(sourceURL.path, &named) == 0, named.st_dev == info.st_dev, named.st_ino == info.st_ino,
+                  lstat(targetURL.path, &copied) == 0, copied.st_mode & S_IFMT == S_IFREG,
+                  copied.st_size == info.st_size else {
+                try? FileManager.default.removeItem(at: targetURL)
+                log.error("Skipped local calibration copy: source changed")
+                return
+            }
+        } catch {
+            log.error("Skipped local calibration copy: copy failed")
+        }
     }
 
     private static func annotate(_ image: CGImage, frame: Frame, marks: [Stroke],
@@ -169,12 +319,10 @@ enum Export {
         let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
         context.draw(image, in: bounds)
         let scale = min(bounds.width / frame.boundsInPoints.width, bounds.height / frame.boundsInPoints.height)
-        for mark in marks {
-            MarkRenderer.draw(mark, in: context, bounds: bounds, pixelsPerPoint: scale,
-                              minimumBadgeHeight: minimumBadgeHeight) { point in
-                guard let pixel = Geometry.denormalize(point, frame: frame) else { return nil }
-                return CGPoint(x: pixel.x, y: bounds.height - pixel.y)
-            }
+        MarkRenderer.draw(marks, in: context, bounds: bounds, frameSize: frame.boundsInPoints, pixelsPerPoint: scale,
+                          minimumBadgeHeight: minimumBadgeHeight) { point in
+            guard let pixel = Geometry.denormalize(point, frame: frame) else { return nil }
+            return CGPoint(x: pixel.x, y: bounds.height - pixel.y)
         }
         guard let result = context.makeImage() else { throw Failure.render }
         return result
@@ -194,7 +342,18 @@ enum Export {
         return context
     }
 
-    private static func writePNG(_ image: CGImage, size: PixelSize, to url: URL) throws {
+    private static func thumbnail(_ image: CGImage) throws -> CGImage {
+        let scale = min(1, 640 / Double(max(image.width, image.height)))
+        let width = max(1, Int((Double(image.width) * scale).rounded()))
+        let height = max(1, Int((Double(image.height) * scale).rounded()))
+        let context = try bitmap(width: width, height: height, colorSpace: image.colorSpace)
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let thumbnail = context.makeImage() else { throw Failure.render }
+        return thumbnail
+    }
+
+    private static func writePNG(_ image: CGImage, size: PixelSize, to url: URL) throws -> Data {
         let output: CGImage
         if image.width == size.width, image.height == size.height {
             output = image
@@ -211,6 +370,8 @@ enum Export {
         else { throw Failure.encode }
         CGImageDestinationAddImage(destination, output, nil)
         guard CGImageDestinationFinalize(destination) else { throw Failure.encode }
-        try (data as Data).write(to: url, options: .atomic)
+        let bytes = data as Data
+        try bytes.write(to: url, options: .atomic)
+        return bytes
     }
 }

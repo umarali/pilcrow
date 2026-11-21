@@ -1,6 +1,7 @@
 import Foundation
 
-/// Stable mark number. Issued once by `Session` and never reused.
+/// A visible mark number or an internal ID for an absorbed gesture.
+/// A pen-down number is provisional until the stroke finishes.
 public struct MarkID: Sendable, Equatable, Hashable, Comparable, Codable {
     public let rawValue: Int
 
@@ -122,7 +123,63 @@ public struct Frame: Identifiable, Sendable, Equatable, Hashable, Codable {
     }
 }
 
-/// One freehand mark. `upTime` stays nil until `Session.endStroke`.
+/// A fitted shape's bounds in top-left frame points.
+public struct PointRect: Sendable, Equatable, Hashable, Codable {
+    public let origin: Point
+    public let size: Size
+
+    public init(origin: Point, size: Size) {
+        self.origin = origin
+        self.size = size
+    }
+
+    var isValid: Bool {
+        size.width.isFinite && size.width > 0 && (origin.x + size.width).isFinite
+            && size.height.isFinite && size.height > 0 && (origin.y + size.height).isFinite
+    }
+}
+
+public enum MarkShape: Sendable, Equatable, Hashable, Codable {
+    public enum Area: Sendable, Equatable, Hashable, Codable {
+        case rectangle(PointRect), ellipse(PointRect), freeform
+
+        public var fittedBounds: PointRect? {
+            switch self {
+            case .rectangle(let bounds), .ellipse(let bounds): return bounds
+            case .freeform: return nil
+            }
+        }
+    }
+
+    case pin, area(Area), arrow(from: MarkID?, to: MarkID?), mark
+
+    // Match the synthesized representation used by saved sessions and stroke recordings.
+    private enum Payload: Codable {
+        case pin, area(Area), arrow(from: MarkID?, to: MarkID?, linkedTo: MarkID?), mark
+    }
+
+    public init(from decoder: Decoder) throws {
+        switch try Payload(from: decoder) {
+        case .pin: self = .pin
+        case .area(let area): self = .area(area)
+        case .arrow(let from, let to, let linkedTo): self = .arrow(from: from ?? linkedTo, to: to)
+        case .mark: self = .mark
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        let payload: Payload
+        switch self {
+        case .pin: payload = .pin
+        case .area(let area): payload = .area(area)
+        case .arrow(let from, let to): payload = .arrow(from: from, to: to, linkedTo: nil)
+        case .mark: payload = .mark
+        }
+        try payload.encode(to: encoder)
+    }
+}
+
+/// One drawn mark. `upTime` stays nil until `Session.endStroke`.
 public struct Stroke: Identifiable, Sendable, Equatable, Hashable, Codable {
     public var id: MarkID
     public var frameID: Frame.ID
@@ -131,9 +188,25 @@ public struct Stroke: Identifiable, Sendable, Equatable, Hashable, Codable {
     /// Seconds on the session clock when the pen lifted. Nil while the stroke is open.
     public var upTime: Double?
     public var points: [NormalizedPoint]
-    /// Where the number is drawn. `beginStroke` sets this to the first point.
+    /// The freehand badge anchor. `beginStroke` sets this to the first point.
     public var badgeAnchor: NormalizedPoint
     public var isDeleted: Bool
+    /// Nil while drawing or when decoding a mark saved before shape recognition.
+    public var shape: MarkShape?
+    /// A same-stroke head begins after this prefix of the original samples.
+    public internal(set) var shaftPointCount: Int?
+    /// True when a separate head was drawn at the shaft's pen-down end.
+    public internal(set) var shaftReversed: Bool?
+    /// A separate head keeps its samples under a hidden ID and points to the visible shaft.
+    public internal(set) var absorbedInto: MarkID?
+    /// Set when the hidden head changed the visible shaft.
+    internal var shapeBeforeAbsorption: MarkShape?
+    internal var shaftReversedBeforeAbsorption: Bool?
+
+    public var renderedPoints: ArraySlice<NormalizedPoint> {
+        guard case .arrow = shape, let count = shaftPointCount, count >= 2 else { return points[...] }
+        return points.prefix(count)
+    }
 
     public init(
         id: MarkID,
@@ -142,7 +215,8 @@ public struct Stroke: Identifiable, Sendable, Equatable, Hashable, Codable {
         upTime: Double?,
         points: [NormalizedPoint],
         badgeAnchor: NormalizedPoint,
-        isDeleted: Bool = false
+        isDeleted: Bool = false,
+        shape: MarkShape? = nil
     ) {
         self.id = id
         self.frameID = frameID
@@ -151,6 +225,7 @@ public struct Stroke: Identifiable, Sendable, Equatable, Hashable, Codable {
         self.points = points
         self.badgeAnchor = badgeAnchor
         self.isDeleted = isDeleted
+        self.shape = shape
     }
 }
 

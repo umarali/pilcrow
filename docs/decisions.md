@@ -117,3 +117,64 @@ The format and several lessons come from the maintainer's earlier project, Benji
 - **Decision:** D-08 is now active through D-17.2. For local builds, sign with an existing Apple Development identity (`PILCROW_SIGN_IDENTITY=<SHA-1>`): its designated requirement is Apple-anchored and stable, and it needs no keychain writes. Contributors without an Apple account use the self-signed "Pilcrow Local Signing" identity (`tools/create-local-signing-identity.sh`, built with the system `/usr/bin/openssl`). Ad-hoc signing still works but resets permissions on every rebuild, and the build script warns. Developer ID with notarization remains the release path. Launch with `open build/Pilcrow.app` so permissions attach to Pilcrow, not Terminal.
 - **Supersedes:** D-08's status "Proposed".
 - **Status:** Active.
+
+### D-20 · Delivery v1: approval preview, then clipboard, Codex CLI, Claude Code or MCP
+- **When / who:** 2026-11-21 · User chose all four destinations; Claude set the mechanism (resolves D-12)
+- **Decision:** After Finish, a normal Preview window shows the exact text and the images actually written; nothing leaves until Send. Destinations: Copy to clipboard (text with absolute image paths, plus the image files); Codex CLI and Claude Code run in Terminal in a remembered project folder through a generated `send.command` opened with `open -a Terminal` (no Automation permission); MCP through `pilcrow-mcp` (D-21). "Sent" is shown only after the step really succeeded. Details: [delivery.md](delivery.md).
+- **Why:** The approval gate is a core differentiator (D-16). A `.command` file avoids the Apple Events permission that scripting Terminal would need.
+- **Supersedes:** D-12 (Codex CLI only, open).
+- **Status:** Active.
+
+### D-21 · Outbox and a read-only MCP server
+- **When / who:** 2026-11-21 · User asked for MCP; Claude set the design
+- **Decision:** On Send, approved messages are copied to `~/Library/Application Support/Pilcrow/Outbox/<id>/` with `manifest.json` (`OutboxManifest` v1 in Core). Items are kept 24 hours. `pilcrow-mcp`, bundled in the app, serves over stdio only items the user sent to MCP, read-only, with tools `pilcrow_latest`, `pilcrow_list` and `pilcrow_get`. It never writes, captures or uses the network.
+- **Why:** Scrawl has no MCP server; serving only approved items keeps the approval gate intact.
+- **Status:** Active.
+
+### D-22 · Finish flow: clipboard first, a tiny HUD, review only on demand
+- **When / who:** 2026-11-21 · User, after calling the approval preview window and its proposed redesign "pathetic"
+- **Principle (user):** minimal input, maximum efficient and performant output. No forms.
+- **Decision:** Finishing a session puts the message (words with `[n]` plus the images as files and paths) on the clipboard immediately and shows a small HUD next to the pill: a strip of numbered crops, the first line of what was said, and "⌘V into your agent". Nothing leaves the Mac until the user pastes, so the paste is the approval. A review window opens only on request from the HUD. Terminal launch (Claude Code, Codex) and MCP stay available as secondary actions, not the default.
+- **Why:** The preview window put the raw agent text, file paths and controls in front of the user and asked for input on every session. Pasting into the agent the user already has open works with every agent (Claude Code, Codex, T3 Code, Conductor) and needs no extra permission.
+- **Supersedes:** D-20's preview window as the default step (its destinations remain, as secondary actions).
+- **Status:** Active; to be built after voice.
+
+### D-23 · Voice: on-device SpeechAnalyzer with word timings
+- **When / who:** 2026-11-21 · User asked whether Benji's local voice would do; Claude chose
+- **Decision:** On-device `SpeechAnalyzer` with `SpeechTranscriber` (`.audioTimeRange`, volatile results), `DictationTranscriber` as fallback; microphone captured only during a session with `AVAudioEngine`, never stored or sent; model downloaded only when the user clicks. Microphone and model are not required to start a session; without them marks still work.
+- **Why:** Benji's shipped path (`SFSpeechRecognizer`, text only) has no word timings, which Pilcrow needs to place `[n]`, and needs the Speech Recognition prompt; Benji's own D-161 already planned the move to SpeechAnalyzer, and Scrawl ships it. Benji's audio-capture robustness (device changes) is reused as a lesson.
+- **Supersedes:** D-06 (open).
+- **Status:** Active; in progress.
+
+### D-24 · The HUD is one row; Review is buttons, not a form
+- **When / who:** 2026-11-21 · Claude, from Opus 5.5 UX reviews against the maintainer's bar (minimal input, maximum output)
+- **Decision:** The finish HUD is a single non-activating row (about 320 × 56 pt, bottom right of the screen the session ended on): a stacked crop thumbnail with a count, "Copied · ⌘V", and icon buttons for Review, the remembered agent and Discard (always last; Undo for 4 s). Review opens only on request: one-click Copy, Claude Code, Codex, MCP, Show in Finder and Discard, above a grid of numbered crops with the spoken words; no pop-ups, folder rows or raw text; a project folder is asked only on an agent's first use. A failed save keeps the capture and says so. Clipboard items are marked transient.
+- **Refines:** D-22 (which described a crop strip plus the first spoken line).
+- **Status:** Active. Open question for the live test: whether terminals such as iTerm2 and Ghostty paste only the image files instead of the text; if so, the clipboard becomes text-only (the text already holds the image paths).
+
+### D-25 · Drawing: one gesture, automatic shapes, tidy only when confident
+- **When / who:** 2026-11-21 · User chose the "middle" option after comparing Claude's tool-picker mockup with Fable 5.2's no-tools critique side by side
+- **Decision:** There is no tool picker and no tool keys. Hold ⇧ and drag, as today; Pilcrow classifies each stroke at pen-up. A closed loop is an **area**: when it is confidently a rectangle or an ellipse it is redrawn as a clean shape at once; otherwise the ink stays as drawn. An open stroke that starts on an existing mark is an **arrow** linked to that mark: the ink stays and an arrowhead is added at the end. Any other open stroke (underline, cross-out, scribble) stays a plain **mark**. A ⇧-click without movement drops a numbered **pin**. One colour and one width. ⌘Z removes a wrong guess together with its mark. The mark's kind and link go into the agent message.
+- **Why:** Minimal keys, UI and learning (user's bar). A picker is a mode on a tool whose point is no modes; ⇧1–4 would swallow `! @ # $` in the app underneath; hold-to-snap taxes every mark. The user still wanted clean rectangles and circles, so confident shapes are tidied.
+- **Alternatives:** four-tool picker with ⇧1–4 and hold-to-snap (Claude's mockup); recognise but never change the ink (Fable 5.2).
+- **Status:** Active; in progress.
+
+### D-26 · Minimal pill, receipt HUD, two-key shortcuts the user can change
+- **When / who:** 2026-11-21 · User, after a live test ("I don't like the ui/ux" of the pill and HUD; "allow for 2 max keys pressed and also allow user to update those keys"), choosing from Fable 5.2's critique
+- **Decision:** While drawing, the pill is a mic dot and "esc" (click it to finish); a red ring at the pointer shows that ⇧ is drawing; a one-line hint sits by the pointer for the first few sessions only. No mark count, Undo, Clear pass or live caption; errors still show. After Finish the HUD is a receipt: thumbnail with count, "Copied · ⌘V", "click to review"; no icons; it fades on its own. Discard and agent sends live in Review and the ¶ menu. Shortcuts are at most two keys (one modifier other than ⇧ plus one key, or a single F-key): default ⌥D starts and finishes, Esc also finishes, ⌘Z undoes. ¶ → Shortcuts… opens a small window with two recorders (Start / finish, Undo mark).
+- **Supersedes:** D-24's HUD icons; the previous three-modifier start default.
+- **Status:** Active; in progress.
+
+### D-27 · Clipboard keeps text and images; per-mark words follow the sentence
+- **When / who:** 2026-11-21 · User chose to keep text + images after T3 Code pasted only the images; Claude set the word rule after the live transcript showed repeats and misassigned words
+- **Decision:** The clipboard keeps the text and the image files (D-24's open question closed). The transcript keeps only finalized speech plus the current volatile tail, so no phrase appears twice. Each mark's words are the sentence spoken around it, each word belonging to one mark, with fillers and immediate repeats removed in the per-mark lines.
+- **Status:** Active; in progress.
+
+### D-28 · Forgiving shape recognition and arrowheads
+- **When / who:** 2026-11-21 · User, after the round-3 live drawing test
+- **Decision:** Tidy clear single loops using corners and straight runs for boxes, and curved outlines for ovals. Trim lead-ins and overshoots that return to the loop. Draw tidy shapes in the loop's frame-aligned bounds. A straight shaft can point from, to, or between pins and areas within a 20 pt margin. A short reverse hook on the same stroke or a following V can supply a hand-drawn head, including for an unlinked arrow. Pilcrow draws a clean head and keeps the original samples. A separate V uses the shaft's badge and can be undone on its own.
+- **Why:** The round-3 captures showed clear hand-drawn boxes and ovals keeping their wobbly ink, arrow shafts missing nearby marks, and a separate arrowhead getting its own number.
+- **Supersedes:** D-25's strict outline fits and start-only arrow links. The original gestures and automatic pen-up classification still apply.
+- **Status:** Implemented and covered by replay of the two round-3 captures.
+
+**Amendment · 2026-11-21.** Compare box and oval fit errors and keep tails as freeform ink when they stray beyond the loop's margin. Arrows use straighter shafts and can link to areas or pins drawn later in the same frame. The tip can look ahead along the shaft to reach a nearby target. Longer drawn heads can work in one stroke, and a separate V or short barb can set the tip at either end. Absorbed gestures keep their original samples under hidden IDs and release their provisional badge numbers. Undo restores the shaft if the head changed it. If the shaft already looked the same, undo removes both. Export and the overlay paint ink before badges. Local stroke recordings use schema 3 and voice timing goes under `debug/`.

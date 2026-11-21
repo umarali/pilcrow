@@ -13,7 +13,6 @@
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>Pilcrow records narration only during a session.</string>
-    <key>NSSpeechRecognitionUsageDescription</key><string>Pilcrow transcribes your speech on this Mac.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Pilcrow uses the microphone during annotation to transcribe narration on this Mac.</string>
 </dict>
 </plist>

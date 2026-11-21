@@ -23,6 +23,7 @@ bundle=build/Pilcrow.app
 rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 cp "$bin_dir/Pilcrow" "$bundle/Contents/MacOS/Pilcrow"
+cp "$bin_dir/pilcrow-mcp" "$bundle/Contents/MacOS/pilcrow-mcp"
 cp Resources/Info.plist "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$bundle/Contents/Info.plist"
@@ -65,6 +66,7 @@ if [ "$identity" = - ]; then
     echo 'WARNING: Ad-hoc signing is in use. macOS permissions may reset on every rebuild.' >&2
     echo 'For a stable local identity, see docs/building.md.' >&2
 fi
+codesign --force --sign "$identity" --identifier org.pilcrow.app.pilcrow-mcp --options runtime "$timestamp_flag" "$bundle/Contents/MacOS/pilcrow-mcp"
 codesign --force --sign "$identity" --options runtime --entitlements Resources/Pilcrow.entitlements "$timestamp_flag" "$bundle"
 codesign --verify --deep --strict "$bundle"
 codesign -d -r- "$bundle"

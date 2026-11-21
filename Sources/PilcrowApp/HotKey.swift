@@ -6,22 +6,14 @@ final class HotKeys {
         case escape
         case undo
 
-        var label: String {
+        var defaultChord: KeyChord {
             switch self {
-            case .annotate: "⇧⌥⌘J"
-            case .escape: "Esc"
-            case .undo: "⌘Z"
+            case .annotate: .startDefault
+            case .escape: .escape
+            case .undo: .undoDefault
             }
         }
 
-        fileprivate var chord: (key: Int, modifiers: Int) {
-            switch self {
-            // Avoid common shortcuts and VoiceOver's Control–Option.
-            case .annotate: (kVK_ANSI_J, cmdKey | shiftKey | optionKey)
-            case .escape: (kVK_Escape, 0)
-            case .undo: (kVK_ANSI_Z, cmdKey)
-            }
-        }
     }
 
     private struct Registration {
@@ -30,12 +22,30 @@ final class HotKeys {
     }
 
     private static let signature: OSType = 0x50696C63 // Pilc
+    var settings = ShortcutSettings.load(from: .standard)
+    func chord(for shortcut: Shortcut) -> KeyChord {
+        switch shortcut {
+        case .annotate: settings.start
+        case .undo: settings.undo
+        case .escape: .escape
+        }
+    }
+    func label(for shortcut: Shortcut) -> String {
+        shortcut == .escape ? "Esc" : chord(for: shortcut).glyph
+    }
+
     private var handler: EventHandlerRef?
     private var registrations: [Shortcut: Registration] = [:]
 
+    func isRegistered(_ shortcut: Shortcut) -> Bool { registrations[shortcut] != nil }
+
     @MainActor
-    func register(_ shortcut: Shortcut, pressed: @escaping @MainActor () -> Void) -> Bool {
-        precondition(registrations[shortcut] == nil)
+    func register(_ shortcut: Shortcut, chord proposed: KeyChord? = nil, pressed: @escaping @MainActor () -> Void) -> Bool {
+        unregister(shortcut)
+        let chord = proposed ?? chord(for: shortcut)
+        // Preserve saved physical keys across layouts, but never take a newly
+        // reserved app/terminal command when restoring or refreshing registration.
+        guard shortcut == .escape || chord.validationError(action: shortcut) == nil else { return false }
         let target = GetApplicationEventTarget()
         if handler == nil {
             var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -58,10 +68,9 @@ final class HotKeys {
             }, 1, &type, Unmanaged.passUnretained(self).toOpaque(), &handler) == noErr else { return false }
         }
 
-        let chord = shortcut.chord
         let id = EventHotKeyID(signature: Self.signature, id: shortcut.rawValue)
         var ref: EventHotKeyRef?
-        guard RegisterEventHotKey(UInt32(chord.key), UInt32(chord.modifiers), id, target,
+        guard RegisterEventHotKey(chord.keyCode, chord.modifiers, id, target,
                                   UInt32(kEventHotKeyExclusive), &ref) == noErr, let ref else { return false }
         registrations[shortcut] = Registration(ref: ref, pressed: pressed)
         return true

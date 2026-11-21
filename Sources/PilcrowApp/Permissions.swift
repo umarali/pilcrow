@@ -1,4 +1,6 @@
 import AppKit
+import AVFoundation
+import Speech
 
 @MainActor
 final class Permissions: NSObject, NSWindowDelegate {
@@ -30,6 +32,15 @@ final class Permissions: NSObject, NSWindowDelegate {
     private var previousApp: NSRunningApplication?
     private var requesting = false
     private var reopening = false
+    private var requestingMicrophone = false
+    private let voiceStatus = NSTextField(labelWithString: "")
+    private let voiceButton = NSButton(title: "Turn on", target: nil, action: nil)
+    private var selectedModel: (VoiceModel, AssetInventory.Status)?
+    private var modelCheck: Task<Void, Never>?
+    private var modelCheckedAt: ContinuousClock.Instant?
+    private var voiceSetup: Task<Void, Never>?
+    private var modelProgress: Progress?
+    private var modelDownloadFailed = false
     private var reopenFailed = false
     private let status = NSTextField(labelWithString: "")
     private let action = NSButton(title: "", target: nil, action: nil)
@@ -46,11 +57,12 @@ final class Permissions: NSObject, NSWindowDelegate {
         super.init()
     }
 
-    var canStart: Bool { !requesting && !reopening }
+    var canStart: Bool { !requesting && !reopening && !requestingMicrophone }
 
     func checkForStart(_ completion: @escaping (State) -> Void) {
         precondition(startCheck == nil)
         startCheck = completion
+        if window != nil { updateVoiceRow() }
         if refreshPreflight() { runProbe() }
     }
 
@@ -114,6 +126,7 @@ final class Permissions: NSObject, NSWindowDelegate {
     private func completeStartCheck(_ state: State) {
         let completion = startCheck
         startCheck = nil
+        if completion != nil, window != nil { updateVoiceRow() }
         completion?(state)
     }
 
@@ -128,6 +141,7 @@ final class Permissions: NSObject, NSWindowDelegate {
             window.center()
         }
         updateRow()
+        checkVoiceModel(refresh: opening)
         NSApp.activate()
         window.orderFrontRegardless()
         window.makeKeyAndOrderFront(nil)
@@ -136,7 +150,10 @@ final class Permissions: NSObject, NSWindowDelegate {
         if opening { pollPreflight() }
         if poll == nil {
             let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.pollPreflight() }
+                MainActor.assumeIsolated {
+                    self?.pollPreflight()
+                    self?.checkVoiceModel()
+                }
             }
             poll = timer
             RunLoop.main.add(timer, forMode: .common)
@@ -155,7 +172,7 @@ final class Permissions: NSObject, NSWindowDelegate {
     }
 
     private func makeWindow() -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 120),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 180),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Pilcrow Permissions"
         window.isReleasedWhenClosed = false
@@ -164,6 +181,7 @@ final class Permissions: NSObject, NSWindowDelegate {
         let name = NSTextField(labelWithString: "Screen Recording")
         name.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
         status.textColor = .secondaryLabelColor
+        status.lineBreakMode = .byTruncatingTail
         let labels = NSStackView(views: [name, status])
         labels.orientation = .vertical
         labels.alignment = .leading
@@ -182,12 +200,29 @@ final class Permissions: NSObject, NSWindowDelegate {
         let rows = NSStackView()
         rows.orientation = .vertical
         rows.alignment = .leading
+        rows.spacing = 9
         rows.detachesHiddenViews = true
         let row = NSStackView(views: [labels, action])
         row.alignment = .centerY
         row.distribution = .equalSpacing
         rows.addArrangedSubview(row)
         rows.addArrangedSubview(reopenRow)
+        let voiceName = NSTextField(labelWithString: "Voice narration")
+        voiceName.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        voiceStatus.textColor = .secondaryLabelColor
+        voiceStatus.lineBreakMode = .byTruncatingTail
+        let voiceLabels = NSStackView(views: [voiceName, voiceStatus])
+        voiceLabels.orientation = .vertical
+        voiceLabels.alignment = .leading
+        voiceLabels.spacing = 4
+        voiceButton.bezelStyle = .rounded
+        voiceButton.target = self
+        voiceButton.action = #selector(turnOnVoice)
+        let voice = NSStackView(views: [voiceLabels, voiceButton])
+        voice.alignment = .centerY
+        voice.distribution = .equalSpacing
+        voice.detachesHiddenViews = true
+        rows.addArrangedSubview(voice)
         rows.translatesAutoresizingMaskIntoConstraints = false
         let content = NSView()
         content.addSubview(rows)
@@ -196,10 +231,140 @@ final class Permissions: NSObject, NSWindowDelegate {
             rows.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             rows.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
             rows.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -20),
-            row.widthAnchor.constraint(equalTo: rows.widthAnchor)
+            row.widthAnchor.constraint(equalTo: rows.widthAnchor),
+            voice.widthAnchor.constraint(equalTo: rows.widthAnchor)
         ])
         window.contentView = content
         return window
+    }
+
+    private func checkVoiceModel(refresh: Bool = false) {
+        // Poll the reported download state while the window is visible. Keep showing
+        // the last status during background queries, including when the window reopens.
+        let ageLimit: Duration = selectedModel?.1 == .downloading ? .seconds(3) : .seconds(60)
+        let stale = modelCheckedAt.map { ContinuousClock.now - $0 >= ageLimit } ?? true
+        if refresh || stale, modelCheck == nil, voiceSetup == nil {
+            modelCheck = Task { [weak self] in
+                let selection = await VoiceModel.select()
+                guard let self else { return }
+                self.selectedModel = selection
+                self.modelCheckedAt = .now
+                self.modelCheck = nil
+                if selection?.1 == .installed { self.modelDownloadFailed = false }
+                self.updateVoiceRow()
+            }
+        }
+        updateVoiceRow()
+    }
+
+    private func updateVoiceRow() {
+        var buttonTitle: String?
+        defer {
+            if let buttonTitle { voiceButton.title = buttonTitle }
+            voiceButton.isHidden = buttonTitle == nil
+            voiceButton.isEnabled = canStart && startCheck == nil
+                && (modelCheck == nil || buttonTitle != "Turn on")
+        }
+        if requestingMicrophone {
+            voiceStatus.stringValue = "Waiting for microphone access…"
+            return
+        }
+        if voiceSetup != nil {
+            if let modelProgress, !modelProgress.isIndeterminate {
+                voiceStatus.stringValue = "Downloading " + modelProgress.fractionCompleted.formatted(.percent.precision(.fractionLength(0)))
+            } else {
+                voiceStatus.stringValue = "Downloading speech model…"
+            }
+            return
+        }
+        let access = AVCaptureDevice.authorizationStatus(for: .audio)
+        switch access {
+        case .denied:
+            voiceStatus.stringValue = "Microphone access denied"
+            buttonTitle = "Open System Settings…"
+            return
+        case .restricted:
+            voiceStatus.stringValue = "Microphone access restricted"
+            return
+        case .authorized, .notDetermined:
+            break
+        @unknown default:
+            voiceStatus.stringValue = "Microphone unavailable"
+            return
+        }
+        guard modelCheckedAt != nil || modelCheck == nil else {
+            voiceStatus.stringValue = "Checking speech model…"
+            return
+        }
+        switch selectedModel?.1 {
+        case .installed where access == .authorized:
+            voiceStatus.stringValue = "On"
+        case .installed:
+            voiceStatus.stringValue = "Uses the microphone during annotation"
+            buttonTitle = "Turn on"
+        case .supported:
+            if modelDownloadFailed {
+                voiceStatus.stringValue = "Speech model download failed"
+            } else if access == .authorized {
+                voiceStatus.stringValue = "Downloads an on-device speech model"
+            } else {
+                voiceStatus.stringValue = "Uses the microphone and downloads a speech model"
+            }
+            buttonTitle = "Turn on"
+        case .downloading:
+            voiceStatus.stringValue = "Downloading speech model…"
+        default:
+            voiceStatus.stringValue = "Speech model unavailable"
+        }
+    }
+
+    @objc private func turnOnVoice() {
+        guard canStart, startCheck == nil, window?.isVisible == true, voiceSetup == nil else { return }
+        let access = AVCaptureDevice.authorizationStatus(for: .audio)
+        if access == .denied {
+            if let settings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+                NSWorkspace.shared.open(settings)
+            }
+            return
+        }
+        guard modelCheck == nil, access == .authorized || access == .notDetermined,
+              let (model, status) = selectedModel, status == .supported || status == .installed else { return }
+        requestingMicrophone = access == .notDetermined
+        modelDownloadFailed = false
+        voiceSetup = Task {
+            defer {
+                voiceSetup = nil
+                modelProgress = nil
+                updateVoiceRow()
+            }
+            if requestingMicrophone {
+                let granted = await AVCaptureDevice.requestAccess(for: .audio)
+                voiceLog.notice("Microphone permission request granted: \(granted, privacy: .public)")
+                requestingMicrophone = false
+                updateRow()
+                guard granted else { return }
+            }
+            guard status == .supported else { return }
+            updateVoiceRow()
+            // The Turn on click consents to installation once microphone access is granted.
+            let modules = [model.makeTranscriber().module]
+            do {
+                if let request = try await AssetInventory.assetInstallationRequest(supporting: modules) {
+                    modelProgress = request.progress
+                    updateVoiceRow()
+                    try await request.downloadAndInstall()
+                }
+            } catch {
+                modelDownloadFailed = true
+                voiceLog.notice("Speech model download failed")
+            }
+            let status = await AssetInventory.status(forModules: modules)
+            selectedModel = (model, status)
+            modelCheckedAt = .now
+            if status == .installed { modelDownloadFailed = false }
+        }
+        updateRow()
+        updateVoiceRow()
     }
 
     private var isBundled: Bool { Bundle.main.bundleURL.pathExtension == "app" }
@@ -236,7 +401,7 @@ final class Permissions: NSObject, NSWindowDelegate {
     }
 
     @objc private func performAction() {
-        guard canStart else { return }
+        guard canStart, startCheck == nil else { return }
         switch state {
         case .off:
             if refreshPreflight() {

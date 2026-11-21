@@ -9,21 +9,21 @@ final class CoreRegressionTests: XCTestCase {
         return try FixList.build(session: Session(strokes: strokes, frames: [frame], words: words)).items.map(\.words)
     }
 
-    func testSparseFinalPeriodUsesBoundedNeighborWindows() throws {
+    func testUnpunctuatedWordsSplitAtSuccessivePenDowns() throws {
         let words = (1...30).map { "w\($0)" } + ["end."]
         XCTAssertEqual(try contexts(words, times: [2.5, 9.5, 19.5]),
-                       [words[0..<9].joined(separator: " "), words[3..<16].joined(separator: " "), words[10..<26].joined(separator: " ")])
+                       [words[..<3].joined(separator: " "), words[3..<10].joined(separator: " "), words[10...].joined(separator: " ")])
     }
 
-    func testSharedShortSentenceFallsBackToNeighborSlots() throws {
+    func testShortClauseSplitsWithoutSharingWords() throws {
         XCTAssertEqual(try contexts(["a", "b", "c", "d", "e", "f."], times: [0.5, 2.5, 4.5]),
-                       ["a b c", "b c d e", "d e f."])
+                       ["a", "b c", "d e f."])
     }
 
     func testAbbreviationsBeforeLowercaseWordsKeepSentenceContext() throws {
         for abbreviation in ["e.g.", "i.e.", "etc."] {
-            XCTAssertEqual(try contexts(["Please", "fix", abbreviation, "this", "button.", "Next."], times: [2.5]),
-                           ["Please fix \(abbreviation) this button."])
+            XCTAssertEqual(try contexts(["Please", "fix", abbreviation, "this", "button.", "Next."], times: [2.5, 5.5]),
+                           ["Please fix \(abbreviation) this button.", "Next."])
         }
     }
 
@@ -199,20 +199,18 @@ final class CoreRegressionTests: XCTestCase {
         XCTAssertThrowsError(try Session(frames: [mismatch])) { XCTAssertEqual($0 as? Session.ValidationError, .frameGeometryMismatch) }
     }
 
-    func testSentenceLengthCutoffIs25WordsAndAppliedPerSentence() throws {
-        for count in [25, 26] {
-            let sentence = ["Word1"] + (2..<count).map { "word\($0)" } + ["end."]
-            let words = ["Before."] + sentence + ["Next."]
-            XCTAssertEqual(try contexts(words, times: [1.5]), [count == 25 ? sentence.joined(separator: " ") : sentence.prefix(7).joined(separator: " ")])
-        }
+    func testLongClauseKeepsAllOfItsWords() throws {
+        let sentence = ["Word1"] + (2..<30).map { "word\($0)" } + ["end."]
+        let words = ["Before."] + sentence + ["Next."]
+        XCTAssertEqual(try contexts(words, times: [1.75, 31.5]), [sentence.joined(separator: " "), "Next."])
     }
 
-    func testStrongTerminatorsSplitBeforeLowercaseAndPeriodBeforeDigit() throws {
-        for ending in ["?", "!", "…"] {
-            XCTAssertEqual(try contexts(["First" + ending, "second", "sentence."], times: [1.5]), ["second sentence."])
+    func testTerminatorsSplitBeforeLowercaseAndDigits() throws {
+        for ending in [".", "?", "!"] {
+            XCTAssertEqual(try contexts(["First" + ending, "second", "sentence."], times: [0.5, 2.5]),
+                           ["First" + ending, "second sentence."])
         }
-        XCTAssertEqual(try contexts(["First.", "2", "items."], times: [1.5]), ["2 items."])
-        XCTAssertEqual(try contexts(["First.", "lowercase", "tail"], times: [1.5]), ["First. lowercase tail"])
+        XCTAssertEqual(try contexts(["First.", "2", "items."], times: [0.5, 2.5]), ["First.", "2 items."])
     }
 
     func testFractionalCropOriginAboveHalfPixelRoundsDown() throws {

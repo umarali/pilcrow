@@ -1,4 +1,5 @@
 import AppKit
+import PilcrowCore
 
 extension NSScreen {
     var displayID: CGDirectDisplayID? {
@@ -42,6 +43,34 @@ final class CanvasPanel: OverlayPanel {
 final class Canvas: NSView {
     weak var session: AnnotationSession?
     let display: CGDirectDisplayID
+    private var pointer = NSPoint.zero
+    private var ring = false
+    private var hintFrame = NSRect.zero
+    private static let hintText = NSAttributedString(string: "Hold ⇧ and drag · say what you want", attributes: [
+        .font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.white
+    ])
+
+    private static let hintSize = hintText.size()
+
+    func updatePointer(_ point: NSPoint, ring: Bool, hint: Bool, visible: NSRect) {
+        var next = NSRect.zero
+        if hint {
+            let width = min(Self.hintSize.width + 20, max(0, visible.width - 8))
+            let height = Self.hintSize.height + 12
+            let x = max(visible.minX + 4, min(point.x + 18, visible.maxX - width - 4))
+            let y = max(visible.minY + 4, min(point.y - height - 16, visible.maxY - height - 4))
+            next = NSRect(x: x, y: y, width: width, height: height)
+        }
+        if !ring && !self.ring && next.isEmpty && hintFrame.isEmpty { return }
+        guard pointer != point || self.ring != ring || hintFrame != next else { return }
+        if self.ring { setNeedsDisplay(NSRect(x: pointer.x - 13, y: pointer.y - 13, width: 26, height: 26)) }
+        if !hintFrame.isEmpty { setNeedsDisplay(hintFrame.insetBy(dx: -1, dy: -1)) }
+        pointer = point
+        self.ring = ring
+        hintFrame = next
+        if ring { setNeedsDisplay(NSRect(x: point.x - 13, y: point.y - 13, width: 26, height: 26)) }
+        if !next.isEmpty { setNeedsDisplay(next.insetBy(dx: -1, dy: -1)) }
+    }
 
     init(display: CGDirectDisplayID, size: CGSize, session: AnnotationSession) {
         self.display = display
@@ -59,11 +88,21 @@ final class Canvas: NSView {
         // A zero-alpha region can pass hits through a borderless window even when drawing is armed.
         context.setFillColor(CGColor(gray: 0, alpha: 0.01))
         context.fill(dirtyRect)
-        for mark in session?.visibleMarks(on: display) ?? [] {
-            MarkRenderer.draw(mark, in: context, bounds: bounds) { point in
-                CGPoint(x: bounds.minX + point.x * bounds.width,
-                        y: bounds.minY + (1 - point.y) * bounds.height)
-            }
+        let frameSize = Size(width: bounds.width, height: bounds.height)
+        MarkRenderer.draw(session?.visibleMarks(on: display) ?? [], in: context, bounds: bounds,
+                          frameSize: frameSize) { point in
+            CGPoint(x: bounds.minX + point.x * bounds.width,
+                    y: bounds.minY + (1 - point.y) * bounds.height)
+        }
+        if ring {
+            context.setStrokeColor(CGColor(srgbRed: 0.89, green: 0.08, blue: 0.12, alpha: 0.85))
+            context.setLineWidth(2)
+            context.strokeEllipse(in: NSRect(x: pointer.x - 10, y: pointer.y - 10, width: 20, height: 20))
+        }
+        if !hintFrame.isEmpty {
+            NSColor(white: 0.16, alpha: 0.96).setFill()
+            NSBezierPath(roundedRect: hintFrame, xRadius: hintFrame.height / 2, yRadius: hintFrame.height / 2).fill()
+            Self.hintText.draw(in: hintFrame.insetBy(dx: 10, dy: 6))
         }
     }
 

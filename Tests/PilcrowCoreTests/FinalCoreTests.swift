@@ -9,29 +9,26 @@ final class FinalCoreTests: XCTestCase {
         return try FixList.build(session: Session(strokes: strokes, frames: [frame], words: words)).items.map(\.words)
     }
 
-    func testFortyWordsUsesTwelveBeforeAndSixAfter() throws {
+    func testOneMarkGetsTheWholeUnpunctuatedClause() throws {
         let words = (1...40).map { "w\($0)" }
-        XCTAssertEqual(try contexts(words, slots: [20]), [words[8..<26].joined(separator: " ")])
+        XCTAssertEqual(try contexts(words, slots: [20]), [words.joined(separator: " ")])
     }
 
-    func testLongSentenceWindowStaysInsideSentence() throws {
+    func testLongClauseDoesNotAbsorbEarlierSpeech() throws {
         let sentence = ["Make"] + (2..<30).map { "w\($0)" } + ["end."]
         let words = ["Before."] + sentence + ["After."]
-        for slot in [2, 16, 30] {
-            let result = try contexts(words, slots: [slot])[0]
-            XCTAssertEqual(result, words[max(1, slot - 12)..<min(31, slot + 6)].joined(separator: " "))
-            XCTAssertLessThanOrEqual(result.split(separator: " ").count, 18)
-        }
+        XCTAssertEqual(try contexts(words, slots: [16, 32]), [sentence.joined(separator: " "), "After."])
     }
 
-    func testSameSlotMarksBothUsePrecedingSentence() throws {
-        XCTAssertEqual(try contexts(["Make", "these", "bigger.", "Then", "align", "the", "footer."], slots: [3, 3]),
-                       ["Make these bigger.", "Make these bigger."])
+    func testSameTimeMarksDoNotBorrowFromTheNextSentence() throws {
+        let words = ["Make", "these", "bigger.", "Then", "align", "the", "footer."]
+        XCTAssertEqual(try contexts(words, slots: [3, 3, 5]),
+                       ["Make these bigger.", "", "Then align the footer."])
     }
 
-    func testHundredEarlierSentencesCannotLeakIntoSharedSentence() throws {
+    func testHundredEarlierSentencesCannotLeakIntoSharedClause() throws {
         let words = (1...100).map { "Sentence\($0)." } + ["Make", "a", "b", "c", "d."]
-        XCTAssertEqual(try contexts(words, slots: [101, 103]), ["Make a b", "a b c d."])
+        XCTAssertEqual(try contexts(words, slots: [102, 103]), ["Make a", "b c d."])
     }
 
     func testTranscriptBlockOpenersAreEscapedAndFixListSurvives() throws {
@@ -188,28 +185,22 @@ final class FinalCoreTests: XCTestCase {
                        "plain\n  \\```swift\n\t\\~~~\n\\+ item\n12\\) item\n\\<div>")
     }
 
-    func testSameSlotMarksDoNotBoundSharedLongSentenceWindow() throws {
+    func testDuplicatePenDownLeavesTheSecondMarkEmptyAndKeepsTheLaterSplit() throws {
         let words = (1...40).map { "w\($0)" }
         XCTAssertEqual(try contexts(words, slots: [20, 20, 24]),
-                       [words[8..<24].joined(separator: " "), words[8..<24].joined(separator: " "), words[20..<30].joined(separator: " ")])
+                       [words[..<20].joined(separator: " "), "", words[20...].joined(separator: " ")])
     }
 
-    func testSameSlotMarksShareTwentyWordSentence() throws {
-        let sentence = (1...19).map { "x\($0)" } + ["end."]
-        XCTAssertEqual(try contexts(sentence, slots: [2, 2]), [sentence.joined(separator: " "), sentence.joined(separator: " ")])
-    }
-
-    func testOtherMarkAnchorUsesSlotImmediatelyBeforeIt() throws {
+    func testMarkOnLastWordKeepsTheWordsSinceThePreviousSplit() throws {
         let sentence = (1...19).map { "x\($0)" } + ["end."]
         XCTAssertEqual(try contexts(sentence, slots: [2, 20]),
-                       [sentence[0..<8].joined(separator: " "), sentence[8..<20].joined(separator: " ")])
+                       [sentence[..<2].joined(separator: " "), sentence[2...].joined(separator: " ")])
     }
 
-    func testLongSentenceWindowCannotCrossItsSentenceStart() throws {
-        let secondSentence = (0..<29).map { "Y\($0)" } + ["end."]
-        let words = ["Earlier."] + secondSentence
-        XCTAssertEqual(try contexts(words, slots: [0, 5]),
-                       ["Earlier.", secondSentence[0..<10].joined(separator: " ")])
+    func testClauseAfterTheFirstGoesToItsOwnPenDown() throws {
+        let second = (0..<29).map { "Y\($0)" } + ["end."]
+        XCTAssertEqual(try contexts(["Earlier."] + second, slots: [0, 5]),
+                       ["Earlier.", second.joined(separator: " ")])
     }
 
     func testAppWiringSequenceProducesStableSealedExportSnapshot() throws {

@@ -2,6 +2,39 @@ import XCTest
 @testable import PilcrowCore
 
 final class SessionCodableTests: XCTestCase {
+    func testShapesRoundTripAndLegacyStrokeDecodesWithoutShape() throws {
+        let frame = makeFrame()
+        let box = PointRect(origin: Point(x: 200, y: 100), size: Size(width: 200, height: 100))
+        let shapes: [MarkShape] = [.pin, .area(.rectangle(box)), .area(.ellipse(box)), .area(.freeform),
+                                   .arrow(from: 2, to: nil), .arrow(from: nil, to: nil), .mark]
+        let strokes = shapes.enumerated().map { index, shape in
+            Stroke(id: MarkID(rawValue: index + 1), frameID: frame.id, downTime: 0, upTime: 1,
+                   points: [makePoint()], badgeAnchor: makePoint(), shape: shape)
+        }
+        let session = try Session(strokes: strokes, frames: [frame])
+        let encoded = try JSONEncoder().encode(session)
+        XCTAssertEqual(try JSONDecoder().decode(Session.self, from: encoded), session)
+
+        let legacy = Data("""
+        {"id":1,"frameID":"\(frame.id.uuidString)","downTime":0,"upTime":1,
+         "points":[{"x":0.5,"y":0.5}],"badgeAnchor":{"x":0.5,"y":0.5},"isDeleted":false}
+        """.utf8)
+        let decoded = try JSONDecoder().decode(Stroke.self, from: legacy)
+        XCTAssertNil(decoded.shape)
+        XCTAssertEqual(decoded.upTime, 1)
+        XCTAssertEqual(decoded.points, [makePoint(0.5, 0.5)])
+    }
+
+    func testLegacyLinkedToDecodesAsArrowSource() throws {
+        let decoder = JSONDecoder()
+        let legacy = Data(#"{"arrow":{"linkedTo":2}}"#.utf8)
+        XCTAssertEqual(try decoder.decode(MarkShape.self, from: legacy), .arrow(from: 2, to: nil))
+        let both = MarkShape.arrow(from: 2, to: 3)
+        let data = try JSONEncoder().encode(both)
+        XCTAssertEqual(try decoder.decode(MarkShape.self, from: data), both)
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("linkedTo"))
+    }
+
     func testSessionRoundTrip() throws {
         let sessionID = fixedUUID("01")
         let openFrame = makeFrame(id: fixedUUID("02"), capturedAt: 1.5, displayID: 42)

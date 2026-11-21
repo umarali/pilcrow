@@ -71,6 +71,7 @@ final class SessionTests: XCTestCase {
         session.endStroke(id: id, at: 1.25)
         XCTAssertEqual(session.strokes[0].upTime, 1.25)
         XCTAssertEqual(session.strokes[0].downTime, 0.5)
+        XCTAssertEqual(session.strokes[0].shape, .pin)
     }
 
     func testInProgressStrokeHasNoUpTimeAndStaysLive() {
@@ -78,7 +79,35 @@ final class SessionTests: XCTestCase {
         var session = try! Session(frames: [makeFrame(id: frame)])
         let id = try! session.beginStroke(at: 2, frame: frame, firstPoint: makePoint())
         XCTAssertNil(session.strokes[0].upTime)
+        XCTAssertNil(session.strokes[0].shape)
         XCTAssertEqual(session.liveMarks.map(\.id), [id])
+    }
+
+    func testPenUpStoresShapeAndOnlyLinksToEarlierMarksInTheSameFrame() throws {
+        let size = Size(width: 800, height: 400)
+        let a = Frame(id: Frame.ID(), displayID: 1, boundsInPoints: size)
+        let b = Frame(id: Frame.ID(), displayID: 1, boundsInPoints: size)
+        var session = try Session(frames: [a, b])
+        let ink = [makePoint(0.25, 0.25), makePoint(0.5, 0.25), makePoint(0.5, 0.5),
+                   makePoint(0.25, 0.5), makePoint(0.25, 0.25)]
+        let box = try session.beginStroke(at: 0, frame: a.id, firstPoint: ink[0])
+        for point in ink.dropFirst() { session.append(point: point, to: box) }
+        session.endStroke(id: box, at: 1)
+        XCTAssertEqual(session.strokes[0].shape, .area(.rectangle(
+            PointRect(origin: Point(x: 200, y: 100), size: Size(width: 200, height: 100)))))
+        XCTAssertEqual(session.strokes[0].points, ink)
+
+        let start = makePoint(0.375, 0.375), end = makePoint(0.75, 0.75)
+        let arrow = try session.beginStroke(at: 2, frame: a.id, firstPoint: start)
+        session.append(point: end, to: arrow)
+        session.endStroke(id: arrow, at: 3)
+        XCTAssertEqual(session.strokes[1].shape, .arrow(from: box, to: nil))
+        XCTAssertEqual(session.strokes[1].points, [start, end])
+
+        let otherFrame = try session.beginStroke(at: 4, frame: b.id, firstPoint: start)
+        session.append(point: end, to: otherFrame)
+        session.endStroke(id: otherFrame, at: 5)
+        XCTAssertEqual(session.strokes[2].shape, .mark)
     }
 
     func testUnknownMarkIDIsIgnored() {

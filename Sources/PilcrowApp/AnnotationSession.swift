@@ -25,6 +25,7 @@ final class AnnotationSession {
 
     private var panels: [CGDirectDisplayID: CanvasPanel] = [:]
     private var toolbar: Toolbar?
+    private var narration: VoiceNarration?
     private var mouseMonitor: Any?
     private var inputTimer: Timer?
     private var previousCursor: NSCursor?
@@ -36,18 +37,24 @@ final class AnnotationSession {
     private var originals: [Frame.ID: CGImage] = [:]
     private var captureFailures: [Frame.ID: CaptureFailure] = [:]
     private var activeStroke: (id: MarkID, frame: Frame)?
+    private var arming = ShiftArming()
     private var buttonWasUp = false
     private var lastStrokeEnd: TimeInterval?
     private var needsNewPass = false
     private var pass = 1
+    private var hint = SessionHint(previousCount: 3)
     private var ended = false
+    private var finishStartedAt: TimeInterval = 0
+    private var hudAnchor = CGRect.zero
+    private let outbox: OutboxStore
     private let exports: ExportStore
     private let hotKeys: HotKeys
     private let closing: () -> Void
-    private let completed: (URL?, String) -> Void
+    private let completed: (ApprovalExport?, String) -> Void
 
-    init(exports: ExportStore, hotKeys: HotKeys,
-         closing: @escaping () -> Void, completed: @escaping (URL?, String) -> Void) {
+    init(exports: ExportStore, outbox: OutboxStore, hotKeys: HotKeys,
+         closing: @escaping () -> Void, completed: @escaping (ApprovalExport?, String) -> Void) {
+        self.outbox = outbox
         self.exports = exports
         self.hotKeys = hotKeys
         self.closing = closing
@@ -60,6 +67,8 @@ final class AnnotationSession {
         guard let screen = screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? screens.first else {
             return false
         }
+        hint = SessionHint(previousCount: UserDefaults.standard.integer(forKey: SessionHint.defaultsKey))
+        UserDefaults.standard.set(hint.nextCount, forKey: SessionHint.defaultsKey)
         t0 = ProcessInfo.processInfo.systemUptime
         for item in screens {
             guard let id = item.displayID else { continue }
@@ -71,9 +80,14 @@ final class AnnotationSession {
         }
         toolbar = Toolbar(screen: screen, session: self)
         installInputHandlers()
-        refreshToolbar()
         toolbar?.orderFrontRegardless()
         stateLog.notice("Session opened")
+        let narration = VoiceNarration(sessionStart: t0) { [weak self] words, languageCode in
+            self?.core.setTranscript(words: words, languageCode: languageCode)
+        }
+        self.narration = narration
+        narration.start()
+        updateVoiceFeedback()
         return true
     }
 
@@ -84,20 +98,29 @@ final class AnnotationSession {
 
     private func installInputHandlers() {
         let escapeRegistered = hotKeys.register(.escape) { [weak self] in self?.finish(.escape) }
-        let undoRegistered = hotKeys.register(.undo) { [weak self] in self?.undo() }
         var unavailable: [HotKeys.Shortcut] = []
+        if !hotKeys.isRegistered(.annotate) { unavailable.append(.annotate) }
         if !escapeRegistered { unavailable.append(.escape) }
-        if !undoRegistered { unavailable.append(.undo) }
         if !unavailable.isEmpty {
-            stateLog.notice("Session shortcuts unavailable: \(unavailable.map(\.label).joined(separator: ", "), privacy: .public)")
+            stateLog.notice("Session shortcuts unavailable: \(unavailable.map { self.hotKeys.label(for: $0) }.joined(separator: ", "), privacy: .public)")
         }
-        toolbar?.showUnavailableShortcuts(unavailable)
+        toolbar?.showUnavailableShortcuts(unavailable.map { self.hotKeys.label(for: $0) })
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]
         ) { [weak self] event in
             MainActor.assumeIsolated {
-                guard let self, !self.ended, self.activeStroke == nil,
-                      let lastStrokeEnd = self.lastStrokeEnd, event.timestamp - self.t0 >= lastStrokeEnd else { return }
+                guard let self, !self.ended, self.activeStroke == nil else { return }
+                if event.type == .leftMouseDown, Self.isDrawingShift(event.modifierFlags) {
+                    let point = NSEvent.mouseLocation
+                    guard !(self.toolbar.map { NSMouseInRect(point, $0.frame, false) } ?? false),
+                          let display = self.panels.first(where: { NSMouseInRect(point, $0.value.frame, false) })?.key else { return }
+                    // Click-through panels cannot receive an early Shift-click. The existing
+                    // permission-free mouse monitor starts that pin without waiting for a tick.
+                    self.arming.update(shiftHeld: true, now: event.timestamp, mouseDown: true)
+                    self.begin(on: display, at: point, timestamp: event.timestamp)
+                    return
+                }
+                guard let lastStrokeEnd = self.lastStrokeEnd, event.timestamp - self.t0 >= lastStrokeEnd else { return }
                 self.needsNewPass = true
             }
         }
@@ -120,18 +143,23 @@ final class AnnotationSession {
         }
         let pointer = NSEvent.mouseLocation
         let aboveToolbar = toolbar.map { NSMouseInRect(pointer, $0.frame, false) } ?? false
-        let armedDisplay: CGDirectDisplayID?
-        if let activeStroke {
-            armedDisplay = activeStroke.frame.displayID
-        } else if !aboveToolbar, Self.isDrawingShift(NSEvent.modifierFlags) {
-            armedDisplay = panels.first { NSMouseInRect(pointer, $0.value.frame, false) }?.key
-        } else {
-            armedDisplay = nil
-        }
+        let shiftHeld = Self.isDrawingShift(NSEvent.modifierFlags)
+        let armed = arming.update(shiftHeld: shiftHeld, now: ProcessInfo.processInfo.systemUptime)
+        let targets = PointerTargets(
+            activeStroke: activeStroke?.frame.displayID,
+            underPointer: panels.first { NSMouseInRect(pointer, $0.value.frame, false) }?.key,
+            aboveToolbar: aboveToolbar, shiftHeld: shiftHeld, armed: armed)
+        let armedDisplay = targets.ring
 
         for (display, panel) in panels {
-            let ignoresMouse = display != armedDisplay
+            let ignoresMouse = display != targets.capture
             if panel.ignoresMouseEvents != ignoresMouse { panel.ignoresMouseEvents = ignoresMouse }
+            let underPointer = NSMouseInRect(pointer, panel.frame, false) && !aboveToolbar
+            let local = NSPoint(x: pointer.x - panel.frame.minX, y: pointer.y - panel.frame.minY)
+            let visible = (panel.screen?.visibleFrame ?? panel.frame)
+                .offsetBy(dx: -panel.frame.minX, dy: -panel.frame.minY)
+            (panel.contentView as? Canvas)?.updatePointer(local, ring: underPointer && armed,
+                                                        hint: underPointer && hint.showsHint, visible: visible)
         }
         if armedDisplay != nil {
             if previousCursor == nil { previousCursor = NSCursor.current }
@@ -140,6 +168,12 @@ final class AnnotationSession {
             restoreCursor()
         }
         toolbar?.updateVisibleFrame()
+        updateVoiceFeedback()
+    }
+
+    private func updateVoiceFeedback() {
+        guard let narration else { return }
+        toolbar?.updateVoice(narration.feedback, level: narration.level)
     }
 
     private func restoreCursor() {
@@ -191,6 +225,9 @@ final class AnnotationSession {
                 currentFrameIDs[display] = frame.id
             }
             activeStroke = (mark, frame)
+            hint.strokeStarted()
+            updateInput()
+            toolbar?.clearError()
             refresh()
         } catch {
             if existingID == nil { pendingCaptures[frame.id]?.cancel() }
@@ -224,6 +261,8 @@ final class AnnotationSession {
         self.activeStroke = nil
         buttonWasUp = false
         lastStrokeEnd = time
+        updateUndoHotKey()
+        panels[activeStroke.frame.displayID]?.contentView?.needsDisplay = true
     }
 
     private var currentMarks: [Stroke] {
@@ -232,15 +271,27 @@ final class AnnotationSession {
     }
 
     func undo() {
-        guard !ended, let latest = currentMarks.last else { return }
-        core.deleteMark(id: latest.id)
+        guard !ended, activeStroke == nil else { return }
+        core.undoLatestMark(in: Set(currentFrameIDs.values))
         refresh()
     }
 
-    func clearPass() {
-        guard !ended else { return }
-        for mark in currentMarks { core.deleteMark(id: mark.id) }
-        refresh()
+    func keyboardLayoutChanged() {
+        hotKeys.unregister(.undo)
+        updateUndoHotKey()
+    }
+
+    private func updateUndoHotKey() {
+        let wanted = !ended && UndoAvailability.shouldRegister(markCount: currentMarks.count, drawing: activeStroke != nil)
+        if wanted {
+            if !hotKeys.isRegistered(.undo) {
+                _ = hotKeys.register(.undo) { [weak self] in self?.undo() }
+            }
+        } else { hotKeys.unregister(.undo) }
+        let unavailable = [HotKeys.Shortcut.annotate, .escape, .undo].filter {
+            ($0 != .undo || wanted) && !hotKeys.isRegistered($0)
+        }
+        toolbar?.showUnavailableShortcuts(unavailable.map { hotKeys.label(for: $0) })
     }
 
     private func discardUnusedCaptures() {
@@ -285,6 +336,7 @@ final class AnnotationSession {
         do {
             try core.failFrame(id: id)
             captureFailures[id] = failure
+            if !ended { toolbar?.showError(failure.rawValue) }
         } catch {
             reportCoreError(error, during: "record the capture failure")
         }
@@ -296,17 +348,23 @@ final class AnnotationSession {
     }
 
     private func refresh() {
+        updateUndoHotKey()
         for panel in panels.values { panel.contentView?.needsDisplay = true }
-        refreshToolbar()
     }
 
-    private func refreshToolbar() {
-        toolbar?.update(marks: core.liveMarks.count, hasCurrentMarks: !currentMarks.isEmpty)
-    }
+    func stopVoice() { narration?.stop() }
 
     func finish(_ trigger: Trigger) {
         guard !ended else { return }
+        finishStartedAt = ProcessInfo.processInfo.systemUptime
         ended = true
+        // Use the display under the pointer at Finish, including speech-only sessions.
+        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
+            ?? toolbar?.screen ?? NSScreen.main
+        if let area = screen?.visibleFrame {
+            hudAnchor = CGRect(x: area.maxX - 320 - 12, y: area.minY + 12, width: 320, height: 56)
+        }
+        narration?.finish()
         completeStroke(at: ProcessInfo.processInfo.systemUptime)
         hotKeys.unregister(.escape)
         hotKeys.unregister(.undo)
@@ -322,6 +380,7 @@ final class AnnotationSession {
         discardUnusedCaptures()
         let captures = core.framesWithMarks.compactMap { pendingCaptures[$0.id] }
         Task {
+            await narration?.wait()
             for capture in captures { await capture.wait() }
             core.seal()
             let message = MessageBuilder.build(session: core, onlyFinal: false)
@@ -344,33 +403,49 @@ final class AnnotationSession {
         if timedOut > 0 { notes += " · \(timedOut) timed out" }
         if invalid > 0 { notes += " · \(invalid) invalid captures" }
 
+        let id = UUID()
         let folder: URL
         do {
-            folder = try exports.prepare()
+            folder = try await outbox.prepare(id)
         } catch {
-            stateLog.error("Could not prepare the export folder: \(String(describing: error), privacy: .public)")
-            completed(nil, "Couldn’t write the export" + notes)
-            return
+            do { folder = try await exports.prepare() }
+            catch {
+                stateLog.error("Could not prepare a recovery export folder")
+                // Text can still be copied even when no storage is writable.
+                let spoken = FixList.build(session: core).transcript
+                completed(ApprovalExport(id: id, folder: outbox.folder(for: id),
+                    text: DeliveryText.approved(coreText: message.text, failedImages: message.attachments),
+                    attachments: [], imageData: [], marks: [], spokenSummary: spoken,
+                    hudAnchor: hudAnchor, finishStartedAt: finishStartedAt), "Couldn’t save capture")
+                return
+            }
         }
 
         let snapshot = core
         let images = originals
+        let voiceResults = narration?.voiceResults ?? VoiceRecording.Results()
         let result = await Task.detached {
-            Export.write(session: snapshot, message: message, originals: images, to: folder)
+            Export.write(session: snapshot, message: message, originals: images, to: folder, voiceResults: voiceResults)
         }.value
         if !result.failedFiles.isEmpty { notes += " · \(result.failedFiles.count) files failed" }
 
         let count = result.attachments.count
-        guard count > 0 || result.messageWritten else {
-            exports.discard(folder)
-            completed(nil, "Couldn’t write the export" + notes)
-            return
-        }
-
-        exports.keepOnly(folder)
+        await exports.keepOnly(folder)
         var summary = count == 0 ? "Exported message" : "Exported \(count) " + (count == 1 ? "PNG" : "PNGs")
         if count > 0, result.messageWritten { summary += " and message" }
         stateLog.notice("\(summary, privacy: .public)\(notes, privacy: .public)")
-        completed(folder, summary + notes)
+        let missingFiles = message.attachments.filter { !result.attachments.contains($0) }
+        let text = DeliveryText.approved(coreText: message.text, failedImages: missingFiles)
+        let cropMarks = Dictionary(uniqueKeysWithValues: snapshot.liveMarks.map { ("mark-\($0.id.rawValue).png", $0.id.rawValue) })
+        let attachments = result.attachments.map { name in
+            OutboxManifest.Attachment(name: name, kind: cropMarks[name] == nil ? .frame : .crop, mark: cropMarks[name])
+        }
+        let list = FixList.build(session: snapshot, onlyFinal: false)
+        let marks = list.items.map {
+            ApprovalExport.Mark(number: $0.mark.rawValue, words: $0.words, thumbnail: result.thumbnails[$0.cropName])
+        }
+        completed(ApprovalExport(id: id, folder: folder, text: text, attachments: attachments,
+            imageData: result.attachments.compactMap { result.imageData[$0] }, marks: marks,
+            spokenSummary: list.transcript, hudAnchor: hudAnchor, finishStartedAt: finishStartedAt), summary + notes)
     }
 }

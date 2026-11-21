@@ -1,111 +1,132 @@
 import AppKit
 
-private final class ToolbarButton: NSButton {
+private final class PillView: NSView {
+    var finish: (() -> Void)?
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { finish?() }
+    // Make labels and empty capsule space one click target.
+    override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(point) ? self : nil }
+    override func accessibilityPerformPress() -> Bool { finish?(); return true }
 }
 
 final class Toolbar: OverlayPanel {
-    private let undo = ToolbarButton()
-    private let clear = ToolbarButton()
-    private let count = NSTextField(labelWithString: "0 marks")
-    private let hint = NSTextField(labelWithString: "Hold ⇧ to draw")
     private let errorLabel = NSTextField(labelWithString: "")
     private let shortcutWarning = NSTextField(labelWithString: "")
+    private let voiceError = NSTextField(labelWithString: "")
     private let stack = NSStackView()
+    private let voiceDot = NSTextField(labelWithString: "●")
+    private var voiceFeedback: VoiceNarration.Feedback?
+    private var voiceBrightness: Int?
     private var area: NSRect
-    private weak var session: AnnotationSession?
 
     init(screen: NSScreen, session: AnnotationSession) {
-        self.session = session
         area = screen.visibleFrame
         super.init(frame: .zero)
+        allowsToolTipsWhenApplicationIsInactive = true
         level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
-        let finish = ToolbarButton()
-        configure(undo, "Undo", #selector(undoMark))
-        configure(clear, "Clear pass", #selector(clearPass))
-        configure(finish, "Finish", #selector(finishSession))
-        hint.font = .systemFont(ofSize: 12)
-        hint.textColor = .white
-        count.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        count.textColor = .white
-        shortcutWarning.font = .systemFont(ofSize: 12)
-        shortcutWarning.textColor = .white
-        shortcutWarning.isHidden = true
-        errorLabel.font = .systemFont(ofSize: 12)
-        errorLabel.textColor = .white
-        errorLabel.isHidden = true
-
-        let controls = NSStackView(views: [count, hint, undo, clear, finish])
-        controls.spacing = 6
+        let esc = NSTextField(labelWithString: "esc")
+        esc.font = .systemFont(ofSize: 12, weight: .medium)
+        esc.textColor = .white
+        voiceDot.font = .systemFont(ofSize: 9)
+        voiceDot.setAccessibilityLabel("Microphone input level")
+        voiceDot.isHidden = true
+        let controls = NSStackView(views: [voiceDot, esc])
+        controls.spacing = 5
+        controls.alignment = .centerY
+        controls.detachesHiddenViews = true
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.detachesHiddenViews = true
         stack.addArrangedSubview(controls)
-        stack.addArrangedSubview(shortcutWarning)
-        stack.addArrangedSubview(errorLabel)
-        stack.edgeInsets = NSEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
-        stack.spacing = 2
-
-        let pill = NSView()
+        for label in [shortcutWarning, errorLabel, voiceError] {
+            label.font = .systemFont(ofSize: 12)
+            label.textColor = .white
+            label.maximumNumberOfLines = 3
+            label.lineBreakMode = .byWordWrapping
+            label.widthAnchor.constraint(lessThanOrEqualToConstant: max(60, min(420, area.width - 56))).isActive = true
+            label.isHidden = true
+            stack.addArrangedSubview(label)
+        }
+        stack.spacing = 3
+        let pill = PillView()
+        pill.finish = { [weak session] in session?.finish(.pill) }
+        pill.setAccessibilityElement(true)
+        pill.setAccessibilityRole(.button)
+        pill.setAccessibilityLabel("Finish annotation")
+        pill.toolTip = "Finish annotation"
         pill.wantsLayer = true
         pill.layer?.backgroundColor = NSColor(white: 0.16, alpha: 0.98).cgColor
-        pill.layer?.cornerRadius = 19
+        pill.layer?.cornerRadius = 13
         pill.addSubview(stack)
         stack.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: pill.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: pill.trailingAnchor),
+            stack.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -12),
             stack.centerYAnchor.constraint(equalTo: pill.centerYAnchor)
         ])
         contentView = pill
+        resizeAndPosition()
     }
 
     override var canBecomeKey: Bool { false }
 
-    func showUnavailableShortcuts(_ shortcuts: [HotKeys.Shortcut]) {
-        var hints = ["Hold ⇧ to draw"]
-        if !shortcuts.contains(.escape) { hints.append("Esc finish") }
-        if !shortcuts.contains(.undo) { hints.append("⌘Z undo mark") }
-        hint.stringValue = hints.joined(separator: " · ")
-        shortcutWarning.stringValue = "Shortcut unavailable: " + shortcuts.map(\.label).joined(separator: ", ")
-        shortcutWarning.isHidden = shortcuts.isEmpty
+    func showUnavailableShortcuts(_ labels: [String]) {
+        let message = labels.isEmpty ? "" : "Shortcut unavailable: " + labels.joined(separator: ", ")
+        if !message.isEmpty, message != shortcutWarning.stringValue { announce(message) }
+        shortcutWarning.stringValue = message
+        shortcutWarning.isHidden = labels.isEmpty
+        resizeAndPosition()
     }
 
     func showError(_ message: String) {
+        if errorLabel.isHidden || errorLabel.stringValue != message { announce(message) }
         errorLabel.stringValue = message
         errorLabel.isHidden = false
         resizeAndPosition()
     }
 
-    func update(marks: Int, hasCurrentMarks: Bool) {
-        undo.isEnabled = hasCurrentMarks
-        clear.isEnabled = hasCurrentMarks
-        count.stringValue = "\(marks) " + (marks == 1 ? "mark" : "marks")
+    func clearError() {
+        errorLabel.stringValue = ""
+        errorLabel.isHidden = true
+        resizeAndPosition()
+    }
+
+    func updateVoice(_ feedback: VoiceNarration.Feedback, level: Float) {
+        let brightness = feedback == .listening ? Int((min(1, max(0, level * 4)) * 8).rounded()) : 0
+        if brightness != voiceBrightness {
+            voiceBrightness = brightness
+            voiceDot.textColor = NSColor.systemGreen.withAlphaComponent(0.35 + 0.65 * Double(brightness) / 8)
+        }
+        guard feedback != voiceFeedback else { return }
+        voiceFeedback = feedback
+        voiceDot.isHidden = feedback != .listening && feedback != .warming
+        voiceError.isHidden = true
+        if case .failed(let failure) = feedback {
+            announce(failure.rawValue)
+            voiceError.stringValue = failure.rawValue
+            voiceError.isHidden = false
+        }
         resizeAndPosition()
     }
 
     func updateVisibleFrame() {
         guard let updated = screen?.visibleFrame, updated != area else { return }
         area = updated
-        setFrameOrigin(NSPoint(x: area.maxX - frame.width - 12, y: area.minY + 12))
+        resizeAndPosition()
+    }
+
+    private func announce(_ message: String) {
+        guard let contentView else { return }
+        NSAccessibility.post(element: contentView, notification: .announcementRequested, userInfo: [
+            .announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue
+        ])
     }
 
     private func resizeAndPosition() {
         let fitting = stack.fittingSize
-        let width = ceil(fitting.width) + 32
-        let height = max(38, ceil(fitting.height))
+        let width = max(44, ceil(fitting.width) + 24)
+        let height = max(26, ceil(fitting.height) + 10)
         let newFrame = NSRect(x: area.maxX - width - 12, y: area.minY + 12, width: width, height: height)
         if frame != newFrame { setFrame(newFrame, display: isVisible) }
     }
-
-    private func configure(_ button: NSButton, _ title: String, _ action: Selector) {
-        button.title = title
-        button.bezelStyle = .rounded
-        button.target = self
-        button.action = action
-    }
-
-    @objc private func undoMark() { session?.undo() }
-    @objc private func clearPass() { session?.clearPass() }
-    @objc private func finishSession() { session?.finish(.pill) }
 }
