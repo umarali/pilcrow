@@ -901,4 +901,33 @@ final class ShapeRecognizerTests: XCTestCase {
         XCTAssertEqual(ShapeRecognizer.recognize(points: [point((200, 100))],
                                                 frameSize: Size(width: 0, height: 400), existingMarks: []), .mark)
     }
+
+    // Fable re-check N1: tip look-ahead must not turn a plain underline into an arrow.
+    func testPlainLineEndingShortOfABoxStaysALine() {
+        let box = target(.area(.rectangle(PointRect(origin: Point(x: 400, y: 280), size: Size(width: 100, height: 60)))),
+                         id: 1, ink: [(400, 280)])
+        for gap in [25.0, 40, 60] {
+            XCTAssertEqual(recognize(polyline([(100, 310), (400 - gap, 310)]), near: [box]), .mark, "gap \(gap)")
+        }
+    }
+
+    // Fable re-check N2: an arrow whose target was undone links to the redrawn target.
+    func testArrowRelinksToARedrawnTargetAfterUndo() throws {
+        let frame = Frame(id: Frame.ID(), displayID: 1, boundsInPoints: frameSize)
+        var session = Session()
+        try session.addFrame(frame)
+        func draw(_ ink: [XY], at time: Double) throws -> MarkID {
+            let id = try session.beginStroke(at: time, frame: frame.id, firstPoint: point(ink[0]))
+            for sample in ink.dropFirst() { session.append(point: point(sample), to: id) }
+            session.endStroke(id: id, at: time + 0.5)
+            return id
+        }
+        let pin = try draw([(100, 200)], at: 0)
+        let shaft = try draw(polyline([(100, 200), (240, 200)]), at: 1)
+        let circle = try draw(oval(rx: 25, ry: 25), at: 5)
+        XCTAssertEqual(session.liveMarks.first { $0.id == shaft }?.shape, .arrow(from: pin, to: circle))
+        session.undoLatestMark(in: [frame.id])
+        let redrawn = try draw(oval(rx: 25, ry: 25), at: 9)
+        XCTAssertEqual(session.liveMarks.first { $0.id == shaft }?.shape, .arrow(from: pin, to: redrawn))
+    }
 }

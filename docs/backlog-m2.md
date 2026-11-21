@@ -94,3 +94,11 @@ Fable 5.2 found these cases in synthetic voice probes.
 - On the first mark, speaking with a pause and then drawing can lose the part before the pause from the fix line.
 - Clean up `What it is is` to `What it is` and `bigger, um.` to `bigger,`.
 - A drain timeout after a shortened final result can drop the volatile tail.
+
+### D-28 re-check follow-ups
+- Two-barb heads need each barb within about 5 pt of the tip; a 14 pt limit helps but swallows more stray dashes (owner's call).
+- The head rule at the start end of a shaft swallows a second short stroke from the same start about 90% of the time; consider requiring a two-legged V there.
+- Undo grouping: a plain shaft plus V takes two undos, but shaft plus two barbs disappears in one. Treat all heads of a shaft as one group.
+- The start end still has a hard 20 pt margin; consider a short look-back for strokes that already have a head or target.
+- A V redrawn after undoing a head usually gets its own number, because the 3 s window runs from the shaft's pen-up.
+- V-leg straightness uses arc length, so 0.5 pt sample jitter flips the owner's V about 22% of the time.

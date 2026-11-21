@@ -184,10 +184,10 @@ public struct Session: Sendable, Equatable, Codable {
         strokes[index].upTime = time
         if let previous {
             let previousStroke = strokes[previous]
-            let parent = previousStroke.absorbedInto.flatMap { shaft in
-                strokes[..<previous].firstIndex { $0.id == shaft && !$0.isDeleted }
-            } ?? previous
-            if let arrow = ShapeRecognizer.absorbHead(stroke, into: strokes[parent],
+            // An orphaned head (its shaft was undone) must not absorb new ink.
+            let parentIndex: Int? = previousStroke.absorbedInto == nil ? previous
+                : strokes[..<previous].firstIndex { $0.id == previousStroke.absorbedInto && !$0.isDeleted }
+            if let parent = parentIndex, let arrow = ShapeRecognizer.absorbHead(stroke, into: strokes[parent],
                                                        previousPenUp: previousStroke.upTime,
                                                        allowOppositeEnd: previousStroke.absorbedInto == nil,
                                                        frameSize: frame.boundsInPoints, existingMarks: existing) {
@@ -207,7 +207,15 @@ public struct Session: Sendable, Equatable, Codable {
         case .pin, .area:
             let target = strokes[index]
             for earlier in strokes.indices.prefix(index) where !strokes[earlier].isDeleted && strokes[earlier].absorbedInto == nil {
-                if let linked = ShapeRecognizer.relink(strokes[earlier], to: target, frameSize: frame.boundsInPoints) {
+                // Links to undone marks count as free ends, so a redrawn target can take them over.
+                var shaft = strokes[earlier]
+                if case .arrow(let from, let to) = shaft.shape {
+                    func live(_ id: MarkID?) -> MarkID? {
+                        id.flatMap { link in strokes.contains { $0.id == link && !$0.isDeleted } ? link : nil }
+                    }
+                    shaft.shape = .arrow(from: live(from), to: live(to))
+                }
+                if let linked = ShapeRecognizer.relink(shaft, to: target, frameSize: frame.boundsInPoints) {
                     strokes[earlier].shape = linked
                 }
             }

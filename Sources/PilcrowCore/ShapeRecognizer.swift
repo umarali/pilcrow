@@ -482,7 +482,8 @@ public enum ShapeRecognizer {
         let approaching = sample(ink, offsets: offsets, at: offsets[tipIndex] - 14, edge: &edge)
         let from = directed(startHit, at: start, opposite: tip, probe: leaving)
         var to = directed(tipHit, at: tip, opposite: start, probe: approaching)
-        if to == nil, tipHit == nil {
+        // Look ahead only for strokes already shown as arrows; a plain line ending near a mark stays a line.
+        if to == nil, tipHit == nil, hasHead || from != nil {
             let reach = min(90, 0.3 * chord)
             var backEdge = 0
             let back = sample(ink, offsets: offsets, at: max(0, offsets[tipIndex] - 30), edge: &backEdge)
