@@ -3,7 +3,7 @@ import AVFoundation
 import Speech
 
 @MainActor
-final class Permissions: NSObject, NSWindowDelegate {
+final class Permissions {
     enum State: String {
         case off = "Off"
         case unverified = "Not yet verified"
@@ -14,27 +14,28 @@ final class Permissions: NSObject, NSWindowDelegate {
 
     private static let requestedKey = "ScreenRecordingRequested"
     private let stateChanged: (State) -> Void
-    private let start: () -> Void
     private let willReopen: () -> Void
     private let reopenDidFail: () -> Void
-    private var state: State = .unverified {
+    private(set) var state: State = .unverified {
         didSet {
             guard oldValue != state else { return }
             stateChanged(state)
-            if window != nil { updateRow() }
+            updateRow()
         }
     }
     private var probe: Task<Void, Never>?
     private var probeTimeout: Task<Void, Never>?
     private var startCheck: ((State) -> Void)?
-    private var window: NSWindow?
+    private var observing = false
+    var changed: (() -> Void)?
+    private(set) var screenGranted = false
     private var poll: Timer?
-    private var previousApp: NSRunningApplication?
     private var requesting = false
     private var reopening = false
     private var requestingMicrophone = false
-    private let voiceStatus = NSTextField(labelWithString: "")
-    private let voiceButton = NSButton(title: "Turn on", target: nil, action: nil)
+    private(set) var voiceStatus = ""
+    private(set) var voiceAction: String?
+    private(set) var voiceActionEnabled = false
     private var selectedModel: (VoiceModel, AssetInventory.Status)?
     private var modelCheck: Task<Void, Never>?
     private var modelCheckedAt: ContinuousClock.Instant?
@@ -42,19 +43,21 @@ final class Permissions: NSObject, NSWindowDelegate {
     private var modelProgress: Progress?
     private var modelDownloadFailed = false
     private var reopenFailed = false
-    private let status = NSTextField(labelWithString: "")
-    private let action = NSButton(title: "", target: nil, action: nil)
-    private let reopenRow = NSStackView()
-    private let reopenHelp = NSTextField(labelWithString: "")
-    private let reopenButton = NSButton(title: "Quit & Reopen", target: nil, action: nil)
-
-    init(stateChanged: @escaping (State) -> Void, start: @escaping () -> Void,
+    init(stateChanged: @escaping (State) -> Void,
          willReopen: @escaping () -> Void, reopenDidFail: @escaping () -> Void) {
         self.stateChanged = stateChanged
-        self.start = start
         self.willReopen = willReopen
         self.reopenDidFail = reopenDidFail
-        super.init()
+    }
+
+    var microphone: SettingsMicrophoneAccess {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: .on
+        case .notDetermined: .undetermined
+        case .denied: .denied
+        case .restricted: .restricted
+        @unknown default: .denied
+        }
     }
 
     var canStart: Bool { !requesting && !reopening && !requestingMicrophone }
@@ -62,13 +65,14 @@ final class Permissions: NSObject, NSWindowDelegate {
     func checkForStart(_ completion: @escaping (State) -> Void) {
         precondition(startCheck == nil)
         startCheck = completion
-        if window != nil { updateVoiceRow() }
+        updateVoiceRow()
         if refreshPreflight() { runProbe() }
     }
 
     @discardableResult
     func refreshPreflight() -> Bool {
-        guard CGPreflightScreenCaptureAccess() else {
+        screenGranted = CGPreflightScreenCaptureAccess()
+        guard screenGranted else {
             probe?.cancel()
             state = .off
             completeStartCheck(.off)
@@ -102,12 +106,13 @@ final class Permissions: NSObject, NSWindowDelegate {
             if Task.isCancelled {
                 if self.startCheck != nil, self.refreshPreflight() {
                     self.runProbe()
-                } else if self.window?.isVisible == true {
+                } else if self.observing {
                     self.pollPreflight()
                 }
                 return
             }
-            let state: State = !CGPreflightScreenCaptureAccess() ? .off : (available ? .available : .needsReopen)
+            self.screenGranted = CGPreflightScreenCaptureAccess()
+            let state: State = !self.screenGranted ? .off : (available ? .available : .needsReopen)
             self.state = state
             self.completeStartCheck(state)
         }
@@ -117,7 +122,8 @@ final class Permissions: NSObject, NSWindowDelegate {
             catch { return }
             guard let self else { return }
             self.probeTimeout = nil
-            let state: State = CGPreflightScreenCaptureAccess() ? .needsReopen : .off
+            self.screenGranted = CGPreflightScreenCaptureAccess()
+            let state: State = self.screenGranted ? .needsReopen : .off
             self.state = state
             self.completeStartCheck(state)
         }
@@ -126,116 +132,33 @@ final class Permissions: NSObject, NSWindowDelegate {
     private func completeStartCheck(_ state: State) {
         let completion = startCheck
         startCheck = nil
-        if completion != nil, window != nil { updateVoiceRow() }
+        if completion != nil { updateVoiceRow() }
         completion?(state)
     }
 
-    func show() {
-        if window == nil { window = makeWindow() }
-        guard let window else { return }
-        let opening = !window.isVisible
-        if opening {
-            if let frontmost = NSWorkspace.shared.frontmostApplication, frontmost != .current {
-                previousApp = frontmost
-            }
-            window.center()
-        }
-        updateRow()
-        checkVoiceModel(refresh: opening)
-        NSApp.activate()
-        window.orderFrontRegardless()
-        window.makeKeyAndOrderFront(nil)
-        // The Start check serves as the opening probe. Sample again in case access
-        // changed while the window was coming forward.
-        if opening { pollPreflight() }
+    func beginObserving() {
+        observing = true
+        refresh()
+        checkVoiceModel(refresh: true)
         if poll == nil {
             let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.pollPreflight()
-                    self?.checkVoiceModel()
-                }
+                MainActor.assumeIsolated { self?.refresh() }
             }
             poll = timer
             RunLoop.main.add(timer, forMode: .common)
         }
     }
 
-    func close() {
-        if window?.isVisible == true { window?.close() }
-    }
-
-    func windowWillClose(_ notification: Notification) {
+    func endObserving() {
+        observing = false
         poll?.invalidate()
         poll = nil
-        if NSRunningApplication.current.isActive { _ = previousApp?.activate() }
-        previousApp = nil
     }
 
-    private func makeWindow() -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 180),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = "Pilcrow Permissions"
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-
-        let name = NSTextField(labelWithString: "Screen Recording")
-        name.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-        status.textColor = .secondaryLabelColor
-        status.lineBreakMode = .byTruncatingTail
-        let labels = NSStackView(views: [name, status])
-        labels.orientation = .vertical
-        labels.alignment = .leading
-        labels.spacing = 4
-        action.bezelStyle = .rounded
-        action.target = self
-        action.action = #selector(performAction)
-        reopenHelp.textColor = .secondaryLabelColor
-        reopenButton.bezelStyle = .rounded
-        reopenButton.target = self
-        reopenButton.action = #selector(reopen)
-        reopenRow.alignment = .centerY
-        reopenRow.addArrangedSubview(reopenHelp)
-        reopenRow.addArrangedSubview(reopenButton)
-
-        let rows = NSStackView()
-        rows.orientation = .vertical
-        rows.alignment = .leading
-        rows.spacing = 9
-        rows.detachesHiddenViews = true
-        let row = NSStackView(views: [labels, action])
-        row.alignment = .centerY
-        row.distribution = .equalSpacing
-        rows.addArrangedSubview(row)
-        rows.addArrangedSubview(reopenRow)
-        let voiceName = NSTextField(labelWithString: "Voice narration")
-        voiceName.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-        voiceStatus.textColor = .secondaryLabelColor
-        voiceStatus.lineBreakMode = .byTruncatingTail
-        let voiceLabels = NSStackView(views: [voiceName, voiceStatus])
-        voiceLabels.orientation = .vertical
-        voiceLabels.alignment = .leading
-        voiceLabels.spacing = 4
-        voiceButton.bezelStyle = .rounded
-        voiceButton.target = self
-        voiceButton.action = #selector(turnOnVoice)
-        let voice = NSStackView(views: [voiceLabels, voiceButton])
-        voice.alignment = .centerY
-        voice.distribution = .equalSpacing
-        voice.detachesHiddenViews = true
-        rows.addArrangedSubview(voice)
-        rows.translatesAutoresizingMaskIntoConstraints = false
-        let content = NSView()
-        content.addSubview(rows)
-        NSLayoutConstraint.activate([
-            rows.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            rows.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            rows.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
-            rows.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -20),
-            row.widthAnchor.constraint(equalTo: rows.widthAnchor),
-            voice.widthAnchor.constraint(equalTo: rows.widthAnchor)
-        ])
-        window.contentView = content
-        return window
+    func refresh() {
+        pollPreflight()
+        checkVoiceModel()
+        updateRow()
     }
 
     private func checkVoiceModel(refresh: Bool = false) {
@@ -260,68 +183,69 @@ final class Permissions: NSObject, NSWindowDelegate {
     private func updateVoiceRow() {
         var buttonTitle: String?
         defer {
-            if let buttonTitle { voiceButton.title = buttonTitle }
-            voiceButton.isHidden = buttonTitle == nil
-            voiceButton.isEnabled = canStart && startCheck == nil
+            voiceAction = buttonTitle
+            voiceActionEnabled = canStart && startCheck == nil && buttonTitle != nil
                 && (modelCheck == nil || buttonTitle != "Turn on")
+            changed?()
         }
         if requestingMicrophone {
-            voiceStatus.stringValue = "Waiting for microphone access…"
+            voiceStatus = "Waiting for microphone access…"
             return
         }
         if voiceSetup != nil {
             if let modelProgress, !modelProgress.isIndeterminate {
-                voiceStatus.stringValue = "Downloading " + modelProgress.fractionCompleted.formatted(.percent.precision(.fractionLength(0)))
+                voiceStatus = "Downloading " + modelProgress.fractionCompleted.formatted(.percent.precision(.fractionLength(0)))
             } else {
-                voiceStatus.stringValue = "Downloading speech model…"
+                voiceStatus = "Downloading speech model…"
             }
             return
         }
         let access = AVCaptureDevice.authorizationStatus(for: .audio)
         switch access {
         case .denied:
-            voiceStatus.stringValue = "Microphone access denied"
+            voiceStatus = "Microphone access denied"
             buttonTitle = "Open System Settings…"
             return
         case .restricted:
-            voiceStatus.stringValue = "Microphone access restricted"
+            voiceStatus = "Microphone access restricted"
+            buttonTitle = "Open System Settings…"
             return
         case .authorized, .notDetermined:
             break
         @unknown default:
-            voiceStatus.stringValue = "Microphone unavailable"
+            voiceStatus = "Microphone unavailable"
             return
         }
         guard modelCheckedAt != nil || modelCheck == nil else {
-            voiceStatus.stringValue = "Checking speech model…"
+            voiceStatus = "Checking speech model…"
             return
         }
         switch selectedModel?.1 {
         case .installed where access == .authorized:
-            voiceStatus.stringValue = "On"
+            voiceStatus = "On"
         case .installed:
-            voiceStatus.stringValue = "Uses the microphone during annotation"
+            voiceStatus = "Uses the microphone during annotation"
             buttonTitle = "Turn on"
         case .supported:
             if modelDownloadFailed {
-                voiceStatus.stringValue = "Speech model download failed"
+                voiceStatus = "Speech model download failed"
             } else if access == .authorized {
-                voiceStatus.stringValue = "Downloads an on-device speech model"
+                voiceStatus = "Downloads an on-device speech model"
             } else {
-                voiceStatus.stringValue = "Uses the microphone and downloads a speech model"
+                voiceStatus = "Uses the microphone and downloads a speech model"
             }
             buttonTitle = "Turn on"
         case .downloading:
-            voiceStatus.stringValue = "Downloading speech model…"
+            voiceStatus = "Downloading speech model…"
         default:
-            voiceStatus.stringValue = "Speech model unavailable"
+            voiceStatus = "Speech model unavailable"
         }
     }
 
-    @objc private func turnOnVoice() {
-        guard canStart, startCheck == nil, window?.isVisible == true, voiceSetup == nil else { return }
+    func turnOnVoice() {
+        guard canStart, startCheck == nil, observing, voiceSetup == nil else { return }
         let access = AVCaptureDevice.authorizationStatus(for: .audio)
-        if access == .denied {
+        if access == .denied || access == .restricted {
             if let settings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
                 NSWorkspace.shared.open(settings)
             }
@@ -370,37 +294,17 @@ final class Permissions: NSObject, NSWindowDelegate {
     private var isBundled: Bool { Bundle.main.bundleURL.pathExtension == "app" }
     private var previouslyRequested: Bool { UserDefaults.standard.bool(forKey: Self.requestedKey) }
 
-    private func updateRow() {
-        status.stringValue = state.rawValue
-        action.isHidden = false
-        action.isEnabled = canStart
-        reopenRow.isHidden = state != .off || !previouslyRequested
-        reopenButton.isHidden = !isBundled
-        reopenButton.isEnabled = canStart
-        switch state {
-        case .off:
-            action.title = previouslyRequested ? "Open System Settings…" : "Grant…"
-            if isBundled {
-                reopenHelp.stringValue = reopenFailed ? "Couldn’t reopen Pilcrow. Quit and open it again." : "Already turned it on?"
-            } else {
-                reopenHelp.stringValue = "Already turned it on? Quit and relaunch the Pilcrow executable."
-            }
-        case .unverified, .checking:
-            action.isHidden = true
-        case .available:
-            action.title = "Start annotating"
-        case .needsReopen:
-            if !isBundled {
-                status.stringValue += ". Quit and relaunch the Pilcrow executable."
-                action.isHidden = true
-            } else {
-                if reopenFailed { status.stringValue = "Couldn’t reopen Pilcrow. Quit and open it again." }
-                action.title = "Quit & Reopen"
-            }
-        }
+    var reopenMessage: String? {
+        guard state == .needsReopen || (state == .off && previouslyRequested) else { return nil }
+        if reopenFailed { return "Couldn’t reopen Pilcrow. Quit and open it again." }
+        if !isBundled { return "Quit and relaunch the Pilcrow executable." }
+        return state == .needsReopen ? state.rawValue : "Already turned it on?"
     }
+    var canReopen: Bool { isBundled && canStart && reopenMessage != nil }
 
-    @objc private func performAction() {
+    private func updateRow() { changed?() }
+
+    func requestScreenAccess() {
         guard canStart, startCheck == nil else { return }
         switch state {
         case .off:
@@ -420,7 +324,7 @@ final class Permissions: NSObject, NSWindowDelegate {
                     let granted = CGRequestScreenCaptureAccess()
                     stateLog.notice("Screen Recording request returned granted: \(granted, privacy: .public)")
                     self.requesting = false
-                    if self.window?.isVisible == true {
+                    if self.observing {
                         self.pollPreflight()
                     } else {
                         self.refreshPreflight()
@@ -429,7 +333,7 @@ final class Permissions: NSObject, NSWindowDelegate {
                 }
             }
         case .available:
-            start()
+            break
         case .needsReopen:
             reopen()
         case .unverified, .checking:
@@ -437,7 +341,7 @@ final class Permissions: NSObject, NSWindowDelegate {
         }
     }
 
-    @objc private func reopen() {
+    func reopen() {
         guard isBundled, canStart,
               state == .needsReopen || (state == .off && previouslyRequested) else { return }
         reopening = true

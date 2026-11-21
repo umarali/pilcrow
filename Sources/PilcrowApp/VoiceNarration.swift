@@ -129,7 +129,7 @@ final class VoiceNarration {
     var level: Float { input == nil ? 0 : audio.reading.level }
 
     func start() {
-        // Only the Permissions window can request access or install a model.
+        // Only Settings can request access or install a model.
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
         analysis = Task { [weak self] in await self?.transcribe() }
     }

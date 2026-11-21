@@ -8,7 +8,7 @@ let stateLog = Logger(subsystem: "org.pilcrow.app", category: "session")
 final class AnnotationSession {
     enum Trigger: String {
         case hotkey, escape = "Esc", pill = "pill Finish", menu = "¶ menu"
-        case permissionsWindow = "permissions window Start", displayChange = "display change"
+        case displayChange = "display change"
     }
 
     private struct Display {

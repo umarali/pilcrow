@@ -10,13 +10,13 @@ Pilcrow exports PNGs directly into a private `~/Library/Application Support/Pilc
 
 If outbox preparation fails, export uses a private temporary recovery folder. If publication fails after direct export, retained PNG bytes produce a recovery copy without re-encoding. Pilcrow keeps the original until recovery succeeds and never discards the only export on failure. The clipboard text uses the retained export's paths. The HUD shows **Couldn’t save · copied** if copying succeeded, or **Couldn’t save or copy** otherwise. Clicking it opens Review, with Copy and Show in Finder available there. Recovery folders named `pilcrow-recovery-<UUID>` survive later sessions, Quit and Pilcrow's legacy temporary-export cleanup. They are outside normal outbox retention; explicit Discard can remove the current recovery. If recovery storage also fails, the original folder and in-memory capture remain available for retry.
 
-Pilcrow prepares the string item and image file-URL items before clearing the clipboard, then calls `writeObjects` once. Each item includes `org.nspasteboard.TransientType` to ask clipboard managers not to retain it. No concealed marker is used. Pilcrow never reads the previous clipboard contents or attempts to restore them. Preparation failure leaves the previous clipboard alone; write failure can leave it empty. Copy is available again from Review and **Copy last capture** in the ¶ menu.
+Pilcrow prepares the string item and image file-URL items before clearing the clipboard, then calls `writeObjects` once. Each item includes `org.nspasteboard.TransientType` to ask clipboard managers not to retain it. No concealed marker is used. Pilcrow never reads the previous clipboard contents or attempts to restore them. Preparation failure leaves the previous clipboard alone; write failure can leave it empty. Copy is available again from Review, opened through **Review last capture…** in the ¶ menu.
 
 D-26 makes the HUD a receipt: one horizontal row, 320 × 56 pt, with 12 pt corners and a system material. A crop thumbnail has a count badge; speech-only captures use `text.quote`. Beside it are **Copied · ⌘V** and **N marks · click to review**, or **Words only · click to review**. Clicking anywhere opens Review, including on failure. There are no icon buttons. The panel cannot become key or main. It appears on the display under the pointer at Finish, at the visible area's bottom right. It keeps the overlay's screen-saver-level, stationary, all-Spaces/full-screen behavior. Visibility over full-screen Spaces still needs a human run.
 
 The HUD fades in/out over 180 ms, or immediately with Reduce Motion. It hides after about five seconds; hovering keeps it visible and gives five seconds after leaving. Failure receipts use the same timing. Starting another session dismisses it. Auto-hide keeps the capture. VoiceOver receives a high-priority announcement of the receipt status and detail when it appears, including save/copy failures. Its accessible button is “Review capture”; the pill is “Finish annotation” and announces errors.
 
-**Discard** is in Review and **Discard last capture** in the ¶ menu, below a separator in the bottom section above Quit. It removes the published item path and conditionally clears the clipboard only if its change count still matches Pilcrow's copy. A newer copy is preserved. Locked staging and recovery rollback still protect the filesystem operation; successful discard finalizes deletion without a HUD Undo state. A later retention pass removes abandoned outbox staging folders after a crash.
+**Discard** is in Review, opened through **Review last capture…** in the ¶ menu. It removes the published item path and conditionally clears the clipboard only if its change count still matches Pilcrow's copy. A newer copy is preserved. Locked staging and recovery rollback still protect the filesystem operation; successful discard finalizes deletion without a HUD Undo state. A later retention pass removes abandoned outbox staging folders after a crash.
 
 Export, outbox writes, routing, deletion and pruning run off the main actor. Thumbnail `CGImage`s pass directly from export to HUD and Review, with no thumbnail PNG encoding or decoding. Retention runs after HUD presentation. A content-free notice logs `Finish-to-HUD` in milliseconds, measured from the initial Finish press, including voice drain, capture wait, export, publication, copy and HUD presentation. It excludes completion of the fade. No live latency has been measured in the build/test-only implementation run.
 
@@ -32,7 +32,7 @@ Start rejects common ⌘ app/system commands and terminal ⌃C, ⌃D and ⌃Z, w
 
 Each terminal button sends immediately using that agent's remembered project. First use asks for a project with `NSOpenPanel` and sends after selection. The button's small chevron offers **Change project…**, which updates only that agent's folder. Missing commands disable the corresponding button with a **Codex not found** or **Claude Code not found** tooltip. MCP's tooltip is **Let your agent fetch it via the Pilcrow MCP server**.
 
-Esc, ⌘W and window close keep the copied capture and call `NSApp.hide(nil)` to return focus. A send in progress blocks close, new annotation, Clear recent captures and Quit. Focus return and immediate ⌘V need live verification.
+Esc, ⌘W and window close keep the copied capture and call `NSApp.hide(nil)` to return focus. A send in progress blocks close, new annotation, Settings → Clear and Quit. Focus return and immediate ⌘V need live verification.
 
 ## Secondary sends and delivery fixes
 
@@ -49,7 +49,7 @@ Codex runs `exec "$pilcrow_executable" [-i '<paths>'] -- "$(/bin/cat '<message p
 
 ## Outbox retention
 
-Items are kept for 24 hours, then pruned on launch, after Finish and on secondary sends. Pilcrow/Outbox/item directories have mode 0700. Cleanup selects user-owned UUID directories, rejects symlinks, locks them and checks identity before deleting. Locked exports and staged discard items are skipped. Failure does not block a new capture. **Show last capture in Finder** reveals the retained capture folder. **Clear recent captures** removes eligible recent outbox items, dismisses stale UI and leaves clipboard contents and copies in other apps alone. Discard conditionally clears Pilcrow's own clipboard copy.
+Items are kept for 24 hours, then pruned on launch, after Finish and on secondary sends. Pilcrow/Outbox/item directories have mode 0700. Cleanup selects user-owned UUID directories, rejects symlinks, locks them and checks identity before deleting. Locked exports and staged discard items are skipped. Failure does not block a new capture. Review → **Show in Finder** reveals the retained capture folder. Settings → **Show** reveals the outbox folder. Settings → **Clear** removes eligible recent outbox items without confirmation, dismisses stale UI and leaves clipboard contents and copies in other apps alone. Discard conditionally clears Pilcrow's own clipboard copy.
 
 ## `pilcrow-mcp` (read-only MCP server)
 
@@ -71,8 +71,8 @@ Setup (see the official [Claude Code MCP instructions](https://code.claude.com/d
 claude mcp add --transport stdio pilcrow -- /Applications/Pilcrow.app/Contents/MacOS/pilcrow-mcp
 ```
 
-```toml
-# ~/.codex/config.toml
-[mcp_servers.pilcrow]
-command = "/Applications/Pilcrow.app/Contents/MacOS/pilcrow-mcp"
+```bash
+codex mcp add pilcrow -- /Applications/Pilcrow.app/Contents/MacOS/pilcrow-mcp
 ```
+
+Settings → Copy for Claude Code / Codex copies the command form above with the actual running bundle's `Contents/MacOS/pilcrow-mcp` path, shell-quoted even when the bundle name contains spaces or apostrophes. Copying does not execute the command or connect an agent.

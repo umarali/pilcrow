@@ -2,7 +2,7 @@
 
 What has been done, and how it was checked. Verification labels: **live-verified** (run by a person on a real Mac), **unit-tested**, **built**, **probed with throwaway scripts**, **untested**. Probes are disposable checks outside the test suite.
 
-Last updated 2026-11-21.
+Last updated 2026-11-22.
 
 | Area | State |
 |---|---|
@@ -12,6 +12,7 @@ Last updated 2026-11-21.
 | Core: speech-to-mark alignment (`Aligner`) | unit-tested on synthetic words and strokes only; real speech timing untested |
 | Core: transcript rendering, message builder | unit-tested |
 | Core: geometry (point flip, scale, size caps) | unit-tested; caps 1600 px / 1.56 MP and 24 px badges (D-17.5) |
+| App: D-30 compact menu and Story Settings | Built: four status-menu actions plus transient warnings, one 440 pt Settings window, inline shortcut recording, bundle-specific MCP setup commands, access and capture footers. 367 tests pass with 0 failures and 0 build warnings, including five new Settings tests. Offscreen light/dark/rejection/mic-off previews were rendered and visually inspected; real window interaction, pasteboard and permission flows are not live-verified. |
 | App: menu-bar item, original hotkey, overlay panels | built; wave 1 drawing live-verified as described below |
 | App: D-26 minimal pill, pointer ring/hint, receipt HUD and configurable ⌥D / ⌘Z shortcuts | built; D-26 review fixes: character-based layout defaults/display, protected shortcuts, recorder release/probe/restore, immediate ⇧ mouse capture with a 200 ms ring delay, modifier-aware layout characters (Russian, Dvorak – QWERTY ⌘), mark-only Undo registration, accessibility announcements and safer Discard placement. 321 tests pass, 0 failures, including 30 added UI regression tests and a disposable discard-storage check. Normal and clean strict-concurrency builds: 0 warnings. Fable review and human live checks pending |
 | App: screen capture excluding Pilcrow's windows (5 s timeout) and private export cleanup | built; wave 1 capture and PNG export live-verified as described below |
@@ -28,7 +29,7 @@ Last updated 2026-11-21.
 | App: on-demand Review and Copy again | built: 800 × 640 pt crop grid and Copy / Claude Code / Codex / MCP / Show in Finder / Discard toolbar; per-agent first-use folder sheets and Change project… menus; Esc/⌘W hide Pilcrow; live focus and toolbar layout checks pending |
 | App: remembered terminal shortcut, per-agent folders and executable lookup | built and probed: lifetime cache per command/shell, Review/failure refresh, sentinel-isolated startup output, zsh/bash alias/function shadowing, executable-path sends, quoting, comma paths and removed-project failure; real CLI acceptance pending |
 | App: private outbox, recovery and sticky MCP availability | built and probed with disposable storage: direct export, manifest-last publication, retained recovery paths on preparation/publication failure, MCP stays visible after later sends; real pasteboard and Terminal handoff pending |
-| App: export/outbox actors, direct CGImage thumbnails, retention and Clear recent captures | built and probed: PNG inode/bytes unchanged by normal publication, no thumbnail encode/decode round trip, export/Undo locks survive pruning, recovery survives later sessions and Quit cleanup; live responsiveness pending |
+| App: export/outbox actors, direct CGImage thumbnails, retention and Settings → Clear | built and probed: PNG inode/bytes unchanged by normal publication, no thumbnail encode/decode round trip, export/Undo locks survive pruning, recovery survives later sessions and Quit cleanup; live responsiveness pending |
 | App: ignore undo during a drag; clear pill error on successful pen-down | built; not live-tested; awaiting orchestrator review |
 | App: prior delivery probes before D-22 | probed with throwaway scripts (66 checks), not in the test suite; includes zsh/bash stub argv and cwd, quoting, disposable storage, frozen attachment bytes, nonfatal retention errors, and timeout process-group cleanup. No AppKit or real agent run; Core suite: 161 tests, 0 failures; full normal and strict-concurrency builds: 0 warnings; orchestrator review and live test pending |
 | D-22 redesign verification, 2026-11-21 | Normal build and a clean `-strict-concurrency=complete` build: 0 warnings. `./tools/test.sh`: 180 tests, 0 failures, 0 warnings. A disposable linker initializer redirects test fixtures into `.build` because the test script strips TMPDIR; normal products are rebuilt afterwards. 52 additional disposable checks passed for real PNG export/storage, publication failure/recovery, retained file identity, MCP stickiness, Discard/Undo staging, command cache, alias/function/no-newline detection and stub-agent argv/cwd. Probes/initializer removed. No App launch, real pasteboard, permissions, audio, screen capture or real agents. Orchestrator review and the expanded human checklist remain pending. |

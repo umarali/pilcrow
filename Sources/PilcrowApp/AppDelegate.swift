@@ -6,21 +6,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var item: NSStatusItem!
     private let start = NSMenuItem(title: "Start annotating", action: #selector(toggleFromMenu), keyEquivalent: "")
     private let reviewLast = NSMenuItem(title: "Review last capture…", action: #selector(reviewLastCapture), keyEquivalent: "")
-    private let reveal = NSMenuItem(title: "Show last capture in Finder", action: #selector(showExport), keyEquivalent: "")
-    private let copyLast = NSMenuItem(title: "Copy last capture", action: #selector(copyLastCapture), keyEquivalent: "")
-    private let discardLast = NSMenuItem(title: "Discard last capture", action: #selector(discardLastCapture), keyEquivalent: "")
-    private let shortcutsItem = NSMenuItem(title: "Shortcuts…", action: #selector(showShortcuts), keyEquivalent: "")
+    private let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
     private let result = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let clearSent = NSMenuItem(title: "Clear recent captures", action: #selector(clearSentCaptures), keyEquivalent: "")
-    private let permissionsItem = NSMenuItem(title: "Permissions…", action: #selector(showPermissions), keyEquivalent: "")
-    private let screenRecording = NSMenuItem(title: "Screen Recording: " + Permissions.State.unverified.rawValue,
-                                             action: nil, keyEquivalent: "")
-    private let shortcutWarning = NSMenuItem(title: "Shortcut unavailable",
-                                             action: nil, keyEquivalent: "")
-    private lazy var permissions = Permissions(stateChanged: { [weak self] state in
-        self?.screenRecording.title = "Screen Recording: " + state.rawValue
-    }, start: { [weak self] in
-        self?.toggle(.permissionsWindow)
+    private let screenRecording = NSMenuItem(title: "Screen Recording needed…", action: #selector(showSettings), keyEquivalent: "")
+    private let shortcutWarning = NSMenuItem(title: "Shortcut unavailable", action: nil, keyEquivalent: "")
+    private lazy var permissions: Permissions = Permissions(stateChanged: { [weak self] _ in
+        self?.screenRecording.isHidden = self?.permissions.screenGranted == true
     }, willReopen: { [weak self] in
         self?.releaseAnnotateHotKey()
     }, reopenDidFail: { [weak self] in
@@ -38,10 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.hotKeys.unregister(.undo)
         return registered
     }, restore: { [weak self] in self?.registerAnnotateHotKey() })
-    private var shortcuts: ShortcutsWindow?
+    private var settings: SettingsWindow?
     private var annotateRetry: Task<Void, Never>?
     private var session: AnnotationSession?
-    private var lastExport: URL?
     private let exports = ExportStore()
     private let outbox = OutboxStore()
     private var preview: ApprovalPreview?
@@ -66,28 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         displayLayout = snapshotDisplays()
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        let menu = NSMenu()
-        menu.autoenablesItems = false
+        let menu = makeStatusMenu()
         menu.delegate = self
-        result.isEnabled = false
-        result.isHidden = true
-        reveal.isEnabled = false
-        screenRecording.isEnabled = false
-        shortcutWarning.isEnabled = false
-        shortcutWarning.isHidden = true
-        menu.addItem(shortcutWarning)
-        for entry in [start, reviewLast, copyLast, reveal, clearSent, shortcutsItem, permissionsItem] {
-            entry.target = self
-            menu.addItem(entry)
-        }
-        menu.addItem(screenRecording)
-        menu.addItem(result)
-        menu.addItem(.separator())
-        discardLast.target = self
-        menu.addItem(discardLast)
-        let quit = menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        quit.target = NSApp
         item.menu = menu
+        NSApp.mainMenu = makeApplicationMenu()
         item.button?.setAccessibilityLabel("Pilcrow")
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(keyboardLayoutChanged),
             name: Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil)
@@ -99,6 +71,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             async let codex = CommandAvailability.shared.available("codex", shellPath: shell)
             _ = await (claude, codex)
         }
+    }
+
+    /// Also used by tests without launching the app or registering hotkeys.
+    func makeStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for warning in [shortcutWarning, result] {
+            warning.isEnabled = false
+            warning.isHidden = true
+        }
+        screenRecording.isHidden = true
+        for entry in [shortcutWarning, result, screenRecording, start, reviewLast] {
+            entry.target = self
+            menu.addItem(entry)
+        }
+        reviewLast.isEnabled = false
+        menu.addItem(.separator())
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        let quit = menu.addItem(withTitle: "Quit Pilcrow", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
+        updateShortcutDisplay()
+        return menu
+    }
+
+    /// Key equivalents must also work while a normal Pilcrow window is key.
+    func makeApplicationMenu() -> NSMenu {
+        let main = NSMenu()
+        let application = NSMenu()
+        let settingsCommand = application.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        settingsCommand.target = self
+        application.addItem(.separator())
+        let quit = application.addItem(withTitle: "Quit Pilcrow", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
+        let item = NSMenuItem(title: "Pilcrow", action: nil, keyEquivalent: "")
+        item.submenu = application
+        main.addItem(item)
+        return main
     }
 
     private func registerAnnotateHotKey() {
@@ -163,30 +173,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func keyboardLayoutChanged() {
         releaseAnnotateHotKey()
         registerAnnotateHotKey()
-        shortcuts?.refreshLabels()
+        settings?.refreshLabels()
         session?.keyboardLayoutChanged()
         updateShortcutDisplay()
     }
 
-    @objc private func showShortcuts() {
-        guard canShowPermissions else { return }
-        if shortcuts == nil {
-            shortcuts = ShortcutsWindow(hotKeys: hotKeys, recorder: recorder,
+    @objc private func showSettings() {
+        guard canShowSettings else { return }
+        presentSettings()
+    }
+
+    private func presentSettings() {
+        if settings == nil {
+            settings = SettingsWindow(hotKeys: hotKeys, recorder: recorder, permissions: permissions,
+                outbox: outbox, canClear: { [weak self] in self?.canClearCaptures == true },
+                clear: { [weak self] in self?.clearSentCaptures() },
                 changed: { [weak self] in self?.updateShortcutDisplay() })
         }
-        shortcuts?.show()
+        settings?.show()
     }
 
     @objc private func toggleFromMenu() { toggle(.menu) }
 
-    @objc private func showPermissions() {
-        guard canShowPermissions else { return }
-        permissions.show()
-    }
-
-    private var canShowPermissions: Bool {
+    private var canShowSettings: Bool {
         session == nil && !checkingStart && !finishing && !deliveryBusy && !clearingSent && !quitting
     }
+
+    private var canClearCaptures: Bool { canShowSettings }
 
     private func toggle(_ trigger: AnnotationSession.Trigger) {
         guard !finishing, !deliveryBusy, !clearingSent, !quitting, !recorder.isRecording else { return }
@@ -196,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             preview.cancel()
         }
         guard permissions.canStart else {
-            permissions.show()
+            presentSettings()
             return
         }
         guard !checkingStart else { return }
@@ -206,16 +219,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             self.checkingStart = false
             if state == .available {
-                self.permissions.close()
+                self.settings?.close()
                 self.openSession()
             } else {
-                self.permissions.show()
+                self.presentSettings()
             }
         }
     }
 
     private func openSession() {
-        shortcuts?.close()
+        settings?.close()
         hud?.dismiss()
         hud = nil
         let current = AnnotationSession(exports: exports, outbox: outbox, hotKeys: hotKeys, closing: { [weak self] in
@@ -251,8 +264,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 let capture = FinishedCapture(approval: kept, outbox: self.outbox,
                     exports: self.exports, shellPath: shell, published: !saveFailed)
-                self.lastExport = kept.folder
-                self.reveal.isEnabled = true
                 self.finishedCapture = capture
                 var copied = false
                 do { try capture.copy(); copied = true }
@@ -287,14 +298,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hud.show()
     }
 
-    @objc private func copyLastCapture() {
-        guard canShowPermissions, let capture = finishedCapture, !capture.isDiscarded else { return }
-        do { try capture.copy(); showResult("Copied · ⌘V") }
-        catch { showResult("Couldn’t copy capture") }
-    }
-
     @objc private func reviewLastCapture() {
-        guard canShowPermissions, let capture = finishedCapture else { return }
+        guard canShowSettings, let capture = finishedCapture else { return }
         hud?.dismiss()
         if let preview { preview.bringForward() }
         else { review(capture) }
@@ -310,23 +315,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         preview.show()
     }
 
-    @objc private func discardLastCapture() {
-        guard canShowPermissions, let capture = finishedCapture, !capture.isDiscarded else { return }
-        Task {
-            do {
-                try await capture.discard()
-                preview?.cancel()
-                captureDiscarded(capture)
-            } catch { showResult("Couldn’t discard capture") }
-        }
-    }
-
     private func captureDiscarded(_ capture: FinishedCapture) {
         hud?.dismiss()
         hud = nil
         finishedCapture = nil
-        lastExport = nil
-        reveal.isEnabled = false
         showResult("Discarded capture")
         Task {
             do { try await capture.finishDiscard() }
@@ -335,13 +327,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        permissions.refreshPreflight()
-        reviewLast.isEnabled = finishedCapture != nil && canShowPermissions
-        copyLast.isEnabled = finishedCapture != nil && canShowPermissions
-        clearSent.isEnabled = !finishing && !deliveryBusy && !clearingSent && !quitting
-        permissionsItem.isEnabled = canShowPermissions
-        shortcutsItem.isEnabled = canShowPermissions
-        discardLast.isEnabled = finishedCapture != nil && canShowPermissions
+        screenRecording.isHidden = permissions.refreshPreflight()
+        reviewLast.isEnabled = finishedCapture != nil && canShowSettings
+        settingsItem.isEnabled = canShowSettings
+        screenRecording.isEnabled = canShowSettings
         start.isEnabled = !finishing && !deliveryBusy && !clearingSent && !quitting && !recorder.isRecording
         updateShortcutDisplay()
     }
@@ -368,7 +357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             showResult("Send in progress. Quit after delivery finishes.")
             return .terminateCancel
         }
-        shortcuts?.close()
+        settings?.close()
         quitting = true
         start.isEnabled = false
         session?.stopVoice()
@@ -392,23 +381,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func clearSentCaptures() {
-        guard !finishing, !deliveryBusy, !clearingSent, !quitting else { return }
+        guard canClearCaptures else { return }
         clearingSent = true
+        settings?.refreshCaptures()
         hud?.dismiss()
         preview?.cancel()
         Task {
-            defer { clearingSent = false }
+            defer { clearingSent = false; settings?.refreshCaptures() }
             do {
                 try await outbox.prune(clearAll: true)
-                lastExport = nil
-                reveal.isEnabled = false
                 finishedCapture = nil
                 showResult("Cleared recent captures")
             } catch { showResult("Couldn’t clear some recent captures") }
         }
     }
 
-    @objc private func showExport() {
-        if let lastExport { NSWorkspace.shared.activateFileViewerSelecting([lastExport]) }
-    }
 }

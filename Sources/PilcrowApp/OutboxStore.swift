@@ -158,6 +158,23 @@ actor OutboxStore {
         catch { return false }
     }
 
+    /// The Settings footer reads metadata only, with the same ownership/name policy as Clear.
+    func hasClearableCaptures() -> Bool {
+        guard (try? validateParents()) != nil, let rootDescriptor = lockDirectory(root) else { return false }
+        defer { close(rootDescriptor) }
+        guard let candidates = try? files.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return false }
+        return candidates.contains { item in
+            var info = stat()
+            guard lstat(item.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+                  info.st_uid == geteuid() else { return false }
+            let name = item.lastPathComponent
+            let id = name.hasPrefix(".discarded-") ? String(name.dropFirst(".discarded-".count)) : name
+            guard UUID(uuidString: id) != nil, let descriptor = lockDirectory(item) else { return false }
+            close(descriptor)
+            return true
+        }
+    }
+
     func prune(now: Date = Date(), clearAll: Bool = false) throws {
         // An absent outbox is normal on first launch. Do not create it until Finish.
         var rootInfo = stat()

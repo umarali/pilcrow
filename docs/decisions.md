@@ -186,3 +186,11 @@ The format and several lessons come from the maintainer's earlier project, Benji
 - **When / who:** 2026-11-22 · User chose the mark badge.
 - **Decision:** Use a disc with a pilcrow cutout for the menu bar and app icon. The menu icon turns red during annotation; the app icon places the red badge on a light rounded plate.
 - **Status:** Implemented.
+
+
+### D-30 · Smaller menu and Story Settings
+- **When / who:** 2026-11-22 · Owner approved direction A, "Story".
+- **Decision:** The status menu has four actions: Start annotating (Finish annotating during a session, with the current start shortcut as a hint), Review last capture…, Settings… (⌘,) and Quit Pilcrow (⌘Q). A separator precedes Settings. Only transient shortcut/result warnings and Screen Recording needed… appear above them when relevant. Copy, Finder and Discard stay in Review. A single 440 pt Story Settings window replaces the Shortcuts and Permissions windows: the three-step reminder contains the editable shortcut keycaps, followed by agent setup commands and quiet access/capture footers. Settings uses the existing recorder validation, hotkey conflict handling and permission recovery paths. Agent setup copies a command for the running bundle's MCP executable; it makes no connection claim.
+- **Why:** The owner found the menu cluttered and the previous settings mockup form-like. Story teaches the flow in the same lines that edit the shortcuts.
+- **Supersedes:** D-26's separate Shortcuts window and menu Discard placement; the separate Permissions window.
+- **Status:** Implemented; build, unit tests and offscreen previews cover the change. Human interaction and permission flows await a live run.
