@@ -5,7 +5,7 @@ import PilcrowCore
 struct Server {
     static let protocolVersion = "2025-11-25"
     static let maxBase64Bytes = 10_000_000
-    static let empty = "No Pilcrow captures have been sent to MCP in the last 24 hours."
+    static let empty = "No Pilcrow captures in the last 24 hours."
     let root: URL
     var now: Date? = nil
     var beforeServing: (() -> Void)? = nil
@@ -13,7 +13,7 @@ struct Server {
 
     private var tools: [[String: Any]] {
         let emptySchema: [String: Any] = ["type": "object", "properties": [:], "additionalProperties": false]
-        let context = "Pilcrow provides screenshots and a numbered fix list the user annotated on their Mac with Pilcrow and explicitly sent to this agent; [n] in the text matches badge n in the images."
+        let context = "Pilcrow provides screenshots and a numbered fix list the user annotated on their Mac with Pilcrow and finished in the last 24 hours; [n] in the text matches badge n in the images."
         let annotations: [String: Any] = ["readOnlyHint": true, "openWorldHint": false]
         return [
             ["name": "pilcrow_latest", "title": "Latest Pilcrow capture", "description": "\(context) Return the latest capture and its images.", "annotations": annotations, "inputSchema": emptySchema],
@@ -167,7 +167,7 @@ struct Server {
             guard fstat(folder, &info) == 0, safeFolder(info),
                   let manifestData = readFile(folder, "manifest.json", limit: 1_048_576),
                   let manifest = try? OutboxManifest.decoder().decode(OutboxManifest.self, from: manifestData),
-                  manifest.version == 1, manifest.destination == .mcp,
+                  manifest.version == 1,
                   name.caseInsensitiveCompare(manifest.id.uuidString) == .orderedSame,
                   manifest.createdAt <= now, manifest.createdAt >= now.addingTimeInterval(-86400) else { continue }
             let ordered = manifest.attachments.enumerated().sorted {

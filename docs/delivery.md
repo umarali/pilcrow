@@ -1,6 +1,6 @@
 # Delivery: clipboard first, Review on demand
 
-D-22 supersedes D-20's default Preview step. Finish copies the sealed message locally. Pasting into your agent is the approval. Terminal and MCP delivery still require an explicit action.
+D-22 supersedes D-20's default Preview step. Finish copies the sealed message locally. Pasting into your agent is the approval. Terminal delivery still requires an explicit action. A configured MCP agent can fetch every valid outbox capture from the last 24 hours without a Review click (D-31).
 
 ## Finish and the HUD
 
@@ -20,6 +20,14 @@ The HUD fades in/out over 180 ms, or immediately with Reduce Motion. It hides af
 
 Export, outbox writes, routing, deletion and pruning run off the main actor. Thumbnail `CGImage`s pass directly from export to HUD and Review, with no thumbnail PNG encoding or decoding. Retention runs after HUD presentation. A content-free notice logs `Finish-to-HUD` in milliseconds, measured from the initial Finish press, including voice drain, capture wait, export, publication, copy and HUD presentation. It excludes completion of the fade. No live latency has been measured in the build/test-only implementation run.
 
+## Image captions (D-31)
+
+`mark-N.png` adds a white caption strip only when that mark has words. `frame-N.png` adds a white panel only when a mark on that frame has words, with one row per spoken mark in mark order. Captions use the same cleaned words and kind labels as the fix list, the same red numbered badge renderer as the overlay, 16 px Helvetica body text in #1d1d1f, grey kind labels and a thin top divider. Review thumbnails include the resulting captions.
+
+The final PNG, including captions, stays within 1,600 px on either edge and 1,560,000 pixels. Screenshot pixels shrink as needed; text stays at its native size and badges stay at least 24 px tall. The original source crop rectangle stays unchanged. Crop strips show at most eight text lines; frame panels use at most 40% of final height. Truncated words end with an ellipsis and grey “(full words in the message)”. The text message retains the complete words. Wordless exports follow the existing rendering path and keep their dimensions.
+
+`message.md`, clipboard text and manifest text retain their previous form. When images exist, only `message-for-agent.md` adds “The images also contain each mark's words under its badge.” The clipboard still carries the text item and image file-URL items.
+
 ## Shortcuts during annotation
 
 Defaults resolve the characters D and Z in the current keyboard layout. Input-source changes refresh labels and Carbon registrations; recorded custom chords retain their physical key codes. If a saved physical chord becomes reserved after a layout change, its key code and display stay intact but registration is refused until a compatible layout returns or the user records another chord. If layout data is unavailable, names and defaults use US mapping. Resetting a recorder with unmodified Delete removes its saved override; modified Delete remains recordable. Keypad names are distinct. Laptop F-keys may need fn, as the recorder hint explains.
@@ -28,15 +36,15 @@ Start rejects common ⌘ app/system commands and terminal ⌃C, ⌃D and ⌃Z, w
 
 ## Review on demand
 
-**Review**, also available as **Review last capture…** in the ¶ menu, opens an 800 × 640 pt normal, resizable window. Its toolbar is Copy, Claude Code, Codex, MCP, Show in Finder, Discard, each an icon and short label. The main content is a two-column grid of numbered crops with read-only spoken words beneath each. Missing crops have a placeholder; speech-only captures show the words. There are no destination pop-ups, folder chooser rows, hint lines, editable fields or exact-text disclosure.
+**Review**, also available as **Review last capture…** in the ¶ menu, opens an 800 × 640 pt normal, resizable window. Its toolbar is Copy, Claude Code, Codex, Show in Finder, Discard, each an icon and short label. The main content is a two-column grid of numbered crops with read-only spoken words beneath each. Missing crops have a placeholder; speech-only captures show the words. There are no destination pop-ups, folder chooser rows, hint lines, editable fields or exact-text disclosure.
 
-Each terminal button sends immediately using that agent's remembered project. First use asks for a project with `NSOpenPanel` and sends after selection. The button's small chevron offers **Change project…**, which updates only that agent's folder. Missing commands disable the corresponding button with a **Codex not found** or **Claude Code not found** tooltip. MCP's tooltip is **Let your agent fetch it via the Pilcrow MCP server**.
+Each terminal button sends immediately using that agent's remembered project. First use asks for a project with `NSOpenPanel` and sends after selection. The button's small chevron offers **Change project…**, which updates only that agent's folder. Missing commands disable the corresponding button with a **Codex not found** or **Claude Code not found** tooltip. MCP has no Review button; recent captures are available automatically to configured agents.
 
 Esc, ⌘W and window close keep the copied capture and call `NSApp.hide(nil)` to return focus. A send in progress blocks close, new annotation, Settings → Clear and Quit. Focus return and immediate ⌘V need live verification.
 
 ## Secondary sends and delivery fixes
 
-Explicit sends reuse the same item, immutable message and attachments without copying again. A recovered capture first retries publication; its recovery paths remain valid for the clipboard already handed off. The store writes `send.command`, then atomically replaces the manifest **last**, preserving the item ID and creation time. Once destination becomes `mcp`, it stays `mcp` after later sends. **The manifest records MCP availability, not necessarily the most recent delivery destination.** Clipboard/CLI-only items stay invisible to MCP. Terminal acceptance does not confirm that an agent started or read the images.
+Explicit sends reuse the same item, immutable message and attachments without copying again. A recovered capture first retries publication; its recovery paths remain valid for the clipboard already handed off. The store writes `send.command`, then atomically replaces the manifest **last**, preserving the item ID and creation time. Every valid recent item is available to MCP, including clipboard and CLI items. Old `mcp` destinations remain decodable and stay unchanged on later sends for compatibility; destination no longer controls MCP availability. Terminal acceptance does not confirm that an agent started or read the images.
 
 - **F1, comma paths:** Codex uses `-i '<comma-separated absolute paths>'` only when images exist and none contains a comma. Otherwise it relies on message paths. Text-only sends omit `-i` and the image-path section.
 - **F2, compatible shell:** resolve the passwd login shell, using `$SHELL` only if lookup is unavailable. Accept absolute executables named zsh, bash, sh, ksh or dash; otherwise use `/bin/zsh`. Detection and execution use the same allowed shell with `-ilc`.
@@ -53,26 +61,28 @@ Items are kept for 24 hours, then pruned on launch, after Finish and on secondar
 
 ## `pilcrow-mcp` (read-only MCP server)
 
-A separate executable bundled at `Pilcrow.app/Contents/MacOS/pilcrow-mcp` serves MCP over newline-delimited JSON-RPC stdio. MCP 2026-07-28 is the current revision; as described in the [versioning page](https://modelcontextprotocol.io/specification/versioning), dual-era clients fall back to initialize when `server/discover` returns -32601. It implements the [2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) and [stdio transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports). It never writes, captures or uses the network. It reads only version 1 items sent to MCP in the last 24 hours. Invalid or unsafe files are skipped. Each response is limited to 10,000,000 bytes of base64 image payload; crops take priority and omitted images are identified by name and absolute path. Attachments must be named `frame-<digits>.png` or `mark-<digits>.png`, be regular PNG files owned by the current user with one link, and reside in a non-group/other-writable folder whose name matches the manifest UUID. Listing uses file metadata without reading image bytes.
+A separate executable bundled at `Pilcrow.app/Contents/MacOS/pilcrow-mcp` serves MCP over newline-delimited JSON-RPC stdio. MCP 2026-07-28 is the current revision; as described in the [versioning page](https://modelcontextprotocol.io/specification/versioning), dual-era clients fall back to initialize when `server/discover` returns -32601. It implements the [2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) and [stdio transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports). It never writes, captures or uses the network. It reads every valid version 1 capture from the last 24 hours, regardless of destination. Discard renames the UUID folder to `.discarded-<id>` before deletion, which fails the manifest/folder-name match; Clear removes eligible folders. Neither is served, including when removal occurs between discovery and serving. Invalid or unsafe files are skipped. Each response is limited to 10,000,000 bytes of base64 image payload; crops take priority and omitted images are identified by name and absolute path. Attachments must be named `frame-<digits>.png` or `mark-<digits>.png`, be regular PNG files owned by the current user with one link, and reside in a non-group/other-writable folder whose name matches the manifest UUID. Listing uses file metadata without reading image bytes.
 
 The default outbox is `~/Library/Application Support/Pilcrow/Outbox`. Set `PILCROW_OUTBOX_DIR` in the server's environment to use a different directory.
 
 Tools and JSON input schemas:
 
-- `pilcrow_latest`: `{"type":"object","properties":{},"additionalProperties":false}`. Returns approved text followed by PNG image blocks, crops in mark order then frames.
+- `pilcrow_latest`: `{"type":"object","properties":{},"additionalProperties":false}`. Returns the finished capture text followed by PNG image blocks, crops in mark order then frames.
 - `pilcrow_list`: `{"type":"object","properties":{},"additionalProperties":false}`. Returns up to 20 recent items with id, creation time, mark count and available attachment names.
 - `pilcrow_get`: `{"type":"object","properties":{"id":{"type":"string"},"mark":{"type":"integer"}},"required":["id"],"additionalProperties":false}`. Returns an item by id, or the fix-list line and available crop for the selected mark. Unknown ids or marks return a tool error.
 
-When no captures are available, latest and list return a normal text result.
+When no captures are available, latest and list return the normal text result “No Pilcrow captures in the last 24 hours.”
 
 Setup (see the official [Claude Code MCP instructions](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server) and [Codex MCP configuration](https://developers.openai.com/codex/mcp)):
 
 ```bash
-claude mcp add --transport stdio pilcrow -- /Applications/Pilcrow.app/Contents/MacOS/pilcrow-mcp
+claude mcp add --scope user --transport stdio pilcrow -- /Applications/Pilcrow.app/Contents/MacOS/pilcrow-mcp
 ```
 
 ```bash
 codex mcp add pilcrow -- /Applications/Pilcrow.app/Contents/MacOS/pilcrow-mcp
 ```
+
+Claude Code setup uses user scope so the server works outside the folder where setup ran. Codex stores MCP configuration in its user `~/.codex/config.toml` by default, as documented in the [Codex MCP configuration](https://developers.openai.com/codex/mcp#connect-codex-to-an-mcp-server); its command needs no scope flag.
 
 Settings → Copy for Claude Code / Codex copies the command form above with the actual running bundle's `Contents/MacOS/pilcrow-mcp` path, shell-quoted even when the bundle name contains spaces or apostrophes. Copying does not execute the command or connect an agent.

@@ -35,6 +35,24 @@ public struct FixItem: Sendable, Equatable, Hashable, Codable {
     public let unavailableReason: UnavailableReason?
     public let words: String
     public let shape: MarkShape?
+
+    /// Human-readable kind shared by fix lines and exported image captions.
+    public var kindLabel: String {
+        switch shape {
+        case .pin: return " (point)"
+        case .area(.rectangle): return " (box)"
+        case .area(.ellipse(let bounds)):
+            let longSide = max(bounds.size.width, bounds.size.height)
+            let shortSide = min(bounds.size.width, bounds.size.height)
+            return longSide / shortSide <= 1.25 ? " (circle)" : " (oval)"
+        case .area(.freeform): return " (area)"
+        case .arrow(let from?, let to?): return " (arrow from [\(from.rawValue)] to [\(to.rawValue)])"
+        case .arrow(let from?, nil): return " (arrow starting at [\(from.rawValue)])"
+        case .arrow(nil, let to?): return " (arrow pointing at [\(to.rawValue)])"
+        case .arrow(nil, nil): return " (arrow)"
+        case .mark, nil: return ""
+        }
+    }
 }
 
 /// A deterministic export description. Core plans crops; the App produces the image files.
@@ -82,23 +100,8 @@ public struct FixList: Sendable, Equatable, Codable {
             case .invalidGeometry: reason = " (crop not available: invalid geometry)"
             case nil: reason = ""
             }
-            let kind: String
-            switch item.shape {
-            case .pin: kind = " (point)"
-            case .area(.rectangle): kind = " (box)"
-            case .area(.ellipse(let bounds)):
-                let longSide = max(bounds.size.width, bounds.size.height)
-                let shortSide = min(bounds.size.width, bounds.size.height)
-                kind = longSide / shortSide <= 1.25 ? " (circle)" : " (oval)"
-            case .area(.freeform): kind = " (area)"
-            case .arrow(let from?, let to?): kind = " (arrow from [\(from.rawValue)] to [\(to.rawValue)])"
-            case .arrow(let from?, nil): kind = " (arrow starting at [\(from.rawValue)])"
-            case .arrow(nil, let to?): kind = " (arrow pointing at [\(to.rawValue)])"
-            case .arrow(nil, nil): kind = " (arrow)"
-            case .mark, nil: kind = ""
-            }
             let words = item.words.isEmpty ? "" : " \"\(TextSanitizer.markdownQuoted(item.words))\""
-            return "- [\(item.mark.rawValue)]\(kind)\(words) → \(item.cropName) (in \(item.imageName))\(reason)"
+            return "- [\(item.mark.rawValue)]\(item.kindLabel)\(words) → \(item.cropName) (in \(item.imageName))\(reason)"
         }.joined(separator: "\n")
         return [TextSanitizer.markdownTranscript(transcript), list].filter { !$0.isEmpty }.joined(separator: "\n\n")
     }

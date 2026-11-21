@@ -32,7 +32,7 @@ final class SettingsTests: XCTestCase {
     func testSetupCommandsUseTheSuppliedBundlePath() {
         let bundle = URL(fileURLWithPath: "/Volumes/Tools/Pilcrow.app")
         XCTAssertEqual(MCPSetupCommand.build(for: .claude, bundleURL: bundle),
-                       "claude mcp add --transport stdio pilcrow -- '/Volumes/Tools/Pilcrow.app/Contents/MacOS/pilcrow-mcp'")
+                       "claude mcp add --scope user --transport stdio pilcrow -- '/Volumes/Tools/Pilcrow.app/Contents/MacOS/pilcrow-mcp'")
         XCTAssertEqual(MCPSetupCommand.build(for: .codex, bundleURL: bundle),
                        "codex mcp add pilcrow -- '/Volumes/Tools/Pilcrow.app/Contents/MacOS/pilcrow-mcp'")
         XCTAssertEqual(MCPSetupCommand.build(for: .codex), MCPSetupCommand.build(for: .codex, bundleURL: Bundle.main.bundleURL))
@@ -42,7 +42,7 @@ final class SettingsTests: XCTestCase {
         let bundle = URL(fileURLWithPath: "/Volumes/Umar's Tools/$(do-not-run); Pilcrow.app")
         for agent in MCPSetupAgent.allCases {
             let command = MCPSetupCommand.build(for: agent, bundleURL: bundle)
-            let prefix = agent == .claude ? "claude mcp add --transport stdio pilcrow -- " : "codex mcp add pilcrow -- "
+            let prefix = agent == .claude ? "claude mcp add --scope user --transport stdio pilcrow -- " : "codex mcp add pilcrow -- "
             XCTAssertTrue(command.hasPrefix(prefix))
             // Execute only the quoted argument with printf, never a real agent or setup command.
             let process = Process()

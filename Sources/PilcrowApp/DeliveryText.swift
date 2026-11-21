@@ -34,6 +34,13 @@ enum DeliveryText {
         return approvedText + "\n\nImages (read these first):" + imagePaths.map { "\n" + $0 }.joined()
     }
 
+    /// Only the agent file gets this hint; the clipboard message keeps its existing form.
+    static func fileMessage(approvedText: String, imagePaths: [String]) -> String {
+        let message = message(approvedText: approvedText, imagePaths: imagePaths)
+        guard !imagePaths.isEmpty else { return message }
+        return message + "\n\nThe images also contain each mark's words under its badge."
+    }
+
     static func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
     }

@@ -90,7 +90,6 @@ final class ServerTests: XCTestCase {
         try withRoot { root in
             let s = Server(root: root)
             XCTAssertEqual(try contents(call(s, "pilcrow_latest")).first?["text"] as? String, Server.empty)
-            _ = try item(root, destination: .clipboard)
             _ = try item(root, date: Date().addingTimeInterval(-90000))
             let invalid = try item(root)
             let invalidPath = root.appendingPathComponent(invalid.id.uuidString).appendingPathComponent("manifest.json")
@@ -111,6 +110,48 @@ final class ServerTests: XCTestCase {
             try FileManager.default.createSymbolicLink(atPath: dir.appendingPathComponent("frame-2.png").path, withDestinationPath: "frame-1.png")
             try Data(repeating: 0, count: 10_000_001).write(to: dir.appendingPathComponent("frame-3.png"))
             XCTAssertEqual(try contents(call(s, "pilcrow_latest")).count, 3)
+        }
+    }
+    func testEveryDestinationIsAvailableWithoutPublishingToMCP() throws {
+        for destination in Destination.allCases {
+            try withRoot { root in
+                let manifest = try item(root, destination: destination)
+                let server = Server(root: root)
+                XCTAssertEqual(try contents(call(server, "pilcrow_latest")).first?["text"] as? String, manifest.text)
+                XCTAssertTrue(try XCTUnwrap(contents(call(server, "pilcrow_list")).first?["text"] as? String).contains(manifest.id.uuidString))
+                XCTAssertEqual(try contents(call(server, "pilcrow_get", ["id": manifest.id.uuidString])).first?["text"] as? String, manifest.text)
+            }
+        }
+    }
+    func testDiscardedAndClearedClipboardCapturesAreNotServed() throws {
+        try withRoot { root in
+            let manifest = try item(root, destination: .clipboard)
+            let folder = root.appendingPathComponent(manifest.id.uuidString)
+            let server = Server(root: root)
+            XCTAssertEqual(try contents(call(server, "pilcrow_latest")).first?["text"] as? String, manifest.text)
+            // OutboxStore.beginDiscard unpublishes using this rename before deleting.
+            let staged = root.appendingPathComponent(".discarded-" + manifest.id.uuidString)
+            try FileManager.default.moveItem(at: folder, to: staged)
+            XCTAssertEqual(try contents(call(server, "pilcrow_list")).first?["text"] as? String, Server.empty)
+            XCTAssertEqual(try call(server, "pilcrow_get", ["id": manifest.id.uuidString])["isError"] as? Bool, true)
+            try FileManager.default.removeItem(at: staged)
+            let cleared = try item(root, destination: .clipboard)
+            // Settings Clear removes eligible UUID directories, leaving no manifest to serve.
+            try FileManager.default.removeItem(at: root.appendingPathComponent(cleared.id.uuidString))
+            XCTAssertEqual(try contents(call(server, "pilcrow_latest")).first?["text"] as? String, Server.empty)
+            XCTAssertEqual(try call(server, "pilcrow_get", ["id": cleared.id.uuidString])["isError"] as? Bool, true)
+        }
+    }
+
+    func testDiscardBetweenListingAndServingDoesNotReturnClipboardCapture() throws {
+        try withRoot { root in
+            let manifest = try item(root, destination: .clipboard, attachments: [.init(name: "mark-1.png", kind: .crop, mark: 1)])
+            var server = Server(root: root)
+            server.beforeServing = {
+                try? FileManager.default.moveItem(at: root.appendingPathComponent(manifest.id.uuidString),
+                    to: root.appendingPathComponent(".discarded-" + manifest.id.uuidString))
+            }
+            XCTAssertEqual(try contents(call(server, "pilcrow_latest")).first?["text"] as? String, Server.empty)
         }
     }
     func testRetentionUsesRequestTime() throws {

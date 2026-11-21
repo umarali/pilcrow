@@ -32,7 +32,7 @@ final class ApprovalPreview: NSObject, NSWindowDelegate, NSToolbarDelegate {
     private var folderPanel: NSOpenPanel?
     private var closed = false
     private var pendingSend = false
-    private let identifiers = ["copy", "claudeCode", "codexCLI", "mcp", "finder", "discard"]
+    private let identifiers = ["copy", "claudeCode", "codexCLI", "finder", "discard"]
         .map { NSToolbarItem.Identifier($0) }
     var isSending: Bool { pendingSend || capture.isSending }
 
@@ -184,9 +184,6 @@ final class ApprovalPreview: NSObject, NSWindowDelegate, NSToolbarDelegate {
             let split = NSStackView(views: [button, chevron])
             split.spacing = 0
             item.view = split
-        case "mcp":
-            button = action("MCP", symbol: "link", selector: #selector(publishMCP))
-            button.toolTip = "Let your agent fetch it via the Pilcrow MCP server"
         case "finder": button = action("Show in Finder", symbol: "folder", selector: #selector(showInFinder))
         case "discard": button = action("Discard", symbol: "trash", selector: #selector(discardCapture))
         default: return nil
@@ -268,8 +265,6 @@ final class ApprovalPreview: NSObject, NSWindowDelegate, NSToolbarDelegate {
             self.updateControls()
         }
     }
-
-    @objc private func publishMCP() { send(to: .mcp, project: nil) }
 
     private func send(to destination: Destination, project: URL?) {
         guard !isSending, !closed else { return }

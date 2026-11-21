@@ -69,7 +69,7 @@ actor OutboxStore {
         if approval.folder != item { Export.copyCalibrationData(from: approval.folder, to: item) }
         let paths = approval.imageURLs(in: item).map(\.path)
         let messageURL = item.appendingPathComponent("message-for-agent.md")
-        try Data(DeliveryText.message(approvedText: approval.text, imagePaths: paths).utf8)
+        try Data(DeliveryText.fileMessage(approvedText: approval.text, imagePaths: paths).utf8)
             .write(to: messageURL, options: .atomic)
         try writeCommand(destination: destination, project: project, paths: paths,
                          messageURL: messageURL, item: item, shellPath: shellPath)
@@ -79,7 +79,7 @@ actor OutboxStore {
         return item
     }
 
-    /// Reuse the clipboard item; publish MCP only after an explicit secondary Send.
+    /// Reuse the clipboard item for an explicit terminal send.
     func route(_ approval: ApprovalExport, destination: Destination, project: URL?, shellPath: String) throws -> URL {
         try validateParents()
         guard let rootDescriptor = lockDirectory(root) else { throw DeliveryFailure("The outbox is busy.") }
@@ -92,7 +92,7 @@ actor OutboxStore {
         guard manifest.id == approval.id else { throw DeliveryFailure("This capture is no longer available.") }
         try writeCommand(destination: destination, project: project, paths: approval.imageURLs(in: item).map(\.path),
                          messageURL: item.appendingPathComponent("message-for-agent.md"), item: item, shellPath: shellPath)
-        // The manifest records MCP availability, not the most recent send.
+        // Preserve the legacy MCP destination when routing an older manifest.
         if manifest.destination != .mcp { manifest.destination = destination }
         try OutboxManifest.encoder().encode(manifest).write(to: manifestURL, options: .atomic)
         return item

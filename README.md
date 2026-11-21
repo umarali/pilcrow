@@ -17,7 +17,7 @@ With voice narration on, Pilcrow links each mark to the words you spoke as you d
 
 ## Sending to your agent
 
-Finish copies your words, numbered marks and image paths/files; press ⌘V in your agent. The small HUD shows a crop/count, “Copied · ⌘V” and “N marks · click to review”, or “Words only · click to review”. Review shows numbered crops with the spoken words underneath and one-click Copy, Claude Code, Codex, MCP, Finder and Discard actions. Each terminal agent remembers its project. Review last capture… remains in the Pilcrow menu after the HUD hides; Copy, Finder and Discard are in Review. Settings has the three-step reminder, shortcut recorders, agent setup commands, access controls, and local capture Show/Clear actions. See [delivery.md](docs/delivery.md) for details and MCP setup.
+Exported PNGs include each mark's cleaned words below its screenshot, so image-only paste targets keep the instruction. Long captions are capped with a note pointing to the full message. Finish copies your words, numbered marks and image paths/files; press ⌘V in your agent. The small HUD shows a crop/count, “Copied · ⌘V” and “N marks · click to review”, or “Words only · click to review”. Review shows numbered crops with the spoken words underneath and one-click Copy, Claude Code, Codex, Finder and Discard actions. Each terminal agent remembers its project. Review last capture… remains in the Pilcrow menu after the HUD hides; Copy, Finder and Discard are in Review. Settings has the three-step reminder, shortcut recorders, agent setup commands, access controls, and local capture Show/Clear actions. See [delivery.md](docs/delivery.md) for details and MCP setup.
 
 ## Requirements
 
@@ -43,7 +43,7 @@ Pilcrow takes a still screenshot at the first mark on each display in a pass. Af
 
 Voice narration is optional. In the Pilcrow menu, open **Settings…** and click **Turn On…** in the Microphone footer. If the microphone is already on but the speech model is missing, click **Turn on** beside the model note. This requests microphone access and, once granted, downloads the on-device speech model if needed. Pilcrow uses the microphone during annotation and for about a quarter second after Finish to catch the last word. Transcription runs on this Mac. Pilcrow never saves or sends microphone audio. You can draw and export marks without setting up voice. Use Review to inspect the words before pasting.
 
-Finish exports images directly into a private local outbox, kept for up to 24 hours, with the manifest written last. If saving fails, Pilcrow keeps a recovery export and still copies the text with paths to those copies. Recovery exports survive later sessions and Quit; Show in Finder lets you find them. Pilcrow prepares all clipboard items before one write and never reads previous clipboard contents. It adds `org.nspasteboard.TransientType` to ask clipboard managers not to retain screenshot captures; clipboard managers may choose whether to honor it. Outbox writes and cleanup run off the main thread. Delivery logs contain destination and outcome, not message text or user paths. Clipboard and CLI delivery hand the approved content to the selected app or agent; that destination controls any further processing. MCP exposes only items explicitly sent to MCP and serves them locally over stdio. Each capture best-effort keeps local schema-3 `strokes.json` calibration data with full-precision frame points, shape labels, timing, frame size/display scale and the recognizer version. The file keeps all samples through 5,000 points per mark, including separate arrowheads, with a 5 MB capture cap. A separate local `debug/voice.json` keeps final word times, speech result ranges and flags, and pen-down and pen-up times under 1 MB. Both follow capture retention and stay out of the clipboard and agent or MCP attachments.
+Finish exports images directly into a private local outbox, kept for up to 24 hours, with the manifest written last. If saving fails, Pilcrow keeps a recovery export and still copies the text with paths to those copies. Recovery exports survive later sessions and Quit; Show in Finder lets you find them. Pilcrow prepares all clipboard items before one write and never reads previous clipboard contents. It adds `org.nspasteboard.TransientType` to ask clipboard managers not to retain screenshot captures; clipboard managers may choose whether to honor it. Outbox writes and cleanup run off the main thread. Delivery logs contain destination and outcome, not message text or user paths. Clipboard and CLI delivery hand the approved content to the selected app or agent; that destination controls any further processing. MCP exposes every valid outbox capture from the last 24 hours locally over stdio, without an extra Review click. Discarded and cleared captures are unavailable. Each capture best-effort keeps local schema-3 `strokes.json` calibration data with full-precision frame points, shape labels, timing, frame size/display scale and the recognizer version. The file keeps all samples through 5,000 points per mark, including separate arrowheads, with a 5 MB capture cap. A separate local `debug/voice.json` keeps final word times, speech result ranges and flags, and pen-down and pen-up times under 1 MB. Both follow capture retention and stay out of the clipboard and agent or MCP attachments.
 
 ## Related work
 
@@ -56,3 +56,19 @@ A pilcrow (¶) is the proofreader's paragraph mark.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Agent setup
+
+Settings → Copy for Claude Code copies a bundle-specific command using user scope, so Pilcrow is available from any folder:
+
+```bash
+claude mcp add --scope user --transport stdio pilcrow -- '/Applications/Pilcrow.app/Contents/MacOS/pilcrow-mcp'
+```
+
+Codex's command already uses its user configuration by default:
+
+```bash
+codex mcp add pilcrow -- '/Applications/Pilcrow.app/Contents/MacOS/pilcrow-mcp'
+```
+
+Both commands quote the actual bundle path, including spaces and apostrophes. Copying never runs setup. Once configured, ask the agent for the latest Pilcrow capture after Finish. See [delivery.md](docs/delivery.md) for the local read-only MCP contract.

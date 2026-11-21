@@ -212,6 +212,21 @@ enum MarkRenderer {
             let y = max(bounds.minY, min(anchor.y - height / 2, bounds.maxY - height))
             badge = CGRect(x: x, y: y, width: width, height: height)
         }
+        drawNumberedBadge(mark.id, in: badge, context: context)
+    }
+
+    /// Identical colour, Helvetica Bold numeral and pill geometry in overlays and captions.
+    static func drawNumberedBadge(_ id: MarkID, in badge: CGRect, context: CGContext) {
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.setFillColor(red)
+        let height = badge.height
+        let text = NSAttributedString(string: String(id.rawValue), attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica-Bold" as CFString, 12 * height / badgeHeight, nil),
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 1, alpha: 1)
+        ])
+        let line = CTLineCreateWithAttributedString(text)
+        let ink = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
         context.addPath(CGPath(roundedRect: badge, cornerWidth: height / 2, cornerHeight: height / 2, transform: nil))
         context.fillPath()
         context.textMatrix = .identity

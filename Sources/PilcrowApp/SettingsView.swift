@@ -31,7 +31,7 @@ enum MCPSetupCommand {
         let path = bundleURL.appendingPathComponent("Contents/MacOS/pilcrow-mcp").path
         // Always quote, including apostrophes and shell metacharacters, not just spaces.
         let quoted = "'" + path.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
-        let command = agent == .claude ? "claude mcp add --transport stdio pilcrow -- " : "codex mcp add pilcrow -- "
+        let command = agent == .claude ? "claude mcp add --scope user --transport stdio pilcrow -- " : "codex mcp add pilcrow -- "
         return command + quoted
     }
 }

@@ -69,7 +69,7 @@ actor ExportStore {
         }
         if folder != approval.folder { Export.copyCalibrationData(from: approval.folder, to: folder) }
         let recovered = approval.relocated(to: folder)
-        try Data(DeliveryText.message(approvedText: recovered.text,
+        try Data(DeliveryText.fileMessage(approvedText: recovered.text,
             imagePaths: recovered.imageURLs(in: folder).map(\.path)).utf8)
             .write(to: folder.appendingPathComponent("message-for-agent.md"), options: .atomic)
         return recovered
@@ -140,6 +140,7 @@ enum Export {
         let frames = Dictionary(uniqueKeysWithValues: session.frames.map { ($0.id, $0) })
         let marks = Dictionary(grouping: session.liveMarks, by: \.frameID)
         let frameIDs = Set(message.framePlans.map(\.frameID))
+        let fixes = FixList.build(session: session).items
         var cropsByFrame: [Frame.ID: [CropPlan]] = [:]
         var written = Set<String>()
         var failures: [String] = []
@@ -192,8 +193,31 @@ enum Export {
                     return
                 }
 
+                // Wordless exports keep the existing render and resize path unchanged.
+                // Captioned outputs size their screenshot first, then enlarge its source
+                // badges for that scale and append text at native pixel size.
+                func captioned(size: PixelSize, sourceRect: CGRect?, items: [FixItem], framePanel: Bool) throws -> CGImage? {
+                    guard !items.isEmpty, let frame = frames[plan.frameID], let original = originals[plan.frameID] else { return nil }
+                    let sourceHeight = sourceRect?.height ?? CGFloat(original.height)
+                    let sourceScale = min(CGFloat(original.width) / frame.boundsInPoints.width,
+                                          CGFloat(original.height) / frame.boundsInPoints.height)
+                    let badge = max(ImageLimits.minBadgeHeightPixels + 1,
+                                    MarkBadgeGeometry.height * sourceScale * CGFloat(size.height) / sourceHeight)
+                    let layout = try ExportCaptions.layout(size: size, items: items, badgeHeight: badge, frame: framePanel)
+                    let annotated = try annotate(original, frame: frame, marks: marks[plan.frameID] ?? [],
+                        minimumBadgeHeight: badge * sourceHeight / CGFloat(layout.screenshot.height))
+                    let region: CGImage
+                    if let sourceRect {
+                        guard let cropped = annotated.cropping(to: sourceRect) else { throw Failure.crop }
+                        region = cropped
+                    } else { region = annotated }
+                    return try ExportCaptions.render(region, layout: layout)
+                }
                 writeFile(plan.outputName) { url in
-                    imageData[plan.outputName] = try writePNG(composite, size: plan.outputSize, to: url)
+                    let items = fixes.filter { $0.frameID == plan.frameID && !$0.words.isEmpty }
+                    let output = try captioned(size: plan.outputSize, sourceRect: nil, items: items, framePanel: true)
+                    imageData[plan.outputName] = try writePNG(output ?? composite,
+                        size: output.map { PixelSize(width: $0.width, height: $0.height) } ?? plan.outputSize, to: url)
                 }
                 for crop in crops {
                     writeFile(crop.cropName) { url in
@@ -202,9 +226,12 @@ enum Export {
                         let rect = CGRect(x: source.origin.x, y: source.origin.y,
                                           width: source.size.width, height: source.size.height)
                         guard let region = composite.cropping(to: rect) else { throw Failure.crop }
-                        let data = try writePNG(region, size: crop.outputSize, to: url)
-                        imageData[crop.cropName] = data
-                        thumbnails[crop.cropName] = try? thumbnail(region)
+                        let items = fixes.filter { $0.cropName == crop.cropName && !$0.words.isEmpty }
+                        let caption = try captioned(size: crop.outputSize, sourceRect: rect, items: items, framePanel: false)
+                        let output = caption ?? region
+                        let size = caption.map { PixelSize(width: $0.width, height: $0.height) } ?? crop.outputSize
+                        imageData[crop.cropName] = try writePNG(output, size: size, to: url)
+                        thumbnails[crop.cropName] = try? thumbnail(output)
                     }
                 }
             }
