@@ -90,18 +90,17 @@ struct SettingsStoryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header.padding(.horizontal, 8).padding(.bottom, 3)
-            GlassEffectContainer(spacing: 6) {
-                VStack(alignment: .leading, spacing: 10) {
-                    if let screen = model.access.first(where: { $0.action == .screen }) {
-                        screenCard(screen.text)
-                    }
-                    if let microphone = model.access.first(where: { $0.action == .microphone }) {
-                        microphonePill(microphone.text)
-                    }
-                    glassGroup { steps }
-                    glassGroup { agentCard }
-                    glassGroup { colourPicker }
+            // No GlassEffectContainer: live windows composite its merged glass over the cards' content.
+            VStack(alignment: .leading, spacing: 10) {
+                if let screen = model.access.first(where: { $0.action == .screen }) {
+                    screenCard(screen.text)
                 }
+                if let microphone = model.access.first(where: { $0.action == .microphone }) {
+                    microphonePill(microphone.text)
+                }
+                glassGroup { steps }
+                glassGroup { agentCard }
+                glassGroup { colourPicker }
             }
             footer.padding(.horizontal, 12)
         }
@@ -289,16 +288,17 @@ struct SettingsStoryView: View {
 
     private func glassGroup<Content: View>(radius: CGFloat = 20, @ViewBuilder content: () -> Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius)
-        return content().frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                if reduceTransparency {
-                    shape.fill(opaqueSurface)
-                } else {
-                    shape.fill(.white.opacity(dark ? 0.05 : 0.40))
-                        .background { Color.clear.glassEffect(.regular, in: shape) }
-                }
+        let base = content().frame(maxWidth: .infinity, alignment: .leading)
+        return Group {
+            if reduceTransparency {
+                base.background(shape.fill(opaqueSurface))
+            } else {
+                // Glass applied to the content itself sits behind it; the white wash keeps text crisp.
+                base.background(shape.fill(.white.opacity(dark ? 0.05 : 0.40)))
+                    .glassEffect(.regular, in: shape)
             }
-            .overlay(shape.strokeBorder(.primary.opacity(0.11), lineWidth: 0.5).allowsHitTesting(false))
+        }
+        .overlay(shape.strokeBorder(.primary.opacity(0.11), lineWidth: 0.5).allowsHitTesting(false))
     }
 
     private func screenCard(_ detail: String) -> some View {

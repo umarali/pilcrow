@@ -180,6 +180,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateShortcutDisplay()
     }
 
+    /// Opening Pilcrow again while it runs (Finder, Spotlight, `open`) shows Settings, as menu-bar apps usually do.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showSettings()
+        return false
+    }
+
     @objc private func showSettings() {
         guard canShowSettings else { return }
         presentSettings()
