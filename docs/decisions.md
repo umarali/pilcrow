@@ -204,3 +204,10 @@ The format and several lessons come from the maintainer's earlier project, Benji
 - **Why:** Image-only paste targets such as T3 Code drop clipboard text, losing the spoken instruction. Requiring an extra Review → MCP click made fetching a capture through MCP pointless. Folder-scoped Claude setup hid Pilcrow outside the setup folder.
 - **Supersedes:** D-27's text-only location for per-mark words, D-21/D-22's explicit MCP publication gate, and D-30's folder-scoped Claude setup command. Clipboard representations and Core crop geometry stay as before.
 - **Status:** Implemented with synthetic offscreen exports and automated tests. App, clipboard targets and real agent setup still need human live checks.
+
+
+### D-32 · Badges keep clear of arrowheads
+- **When / who:** 2026-11-22 · Owner flagged a live capture where oval [6], drawn around the tip of arrow [5] from [4], had its badge on top of [5]'s arrowhead.
+- **Decision:** Draw all ink, then place badges in mark order. Each badge takes its first candidate spot that is not on another mark's arrowhead (padded by 6 pt) or an earlier badge. Ovals try the upper-left diagonal first, then the other diagonals, then the top, sides and bottom; boxes try the top-left corner first, then the other corners. An arrow that starts on a mark and points at another gets its badge beside the middle of the shaft rather than on the outline it leaves. Arrowheads are 13 pt long instead of 10 pt. If every spot is blocked, the badge keeps its first-choice position.
+- **Why:** A badge covering a head made the arrow look as if it were labelled by the shape it points at; a badge on the leaving shape's outline was ambiguous.
+- **Status:** Implemented, with a renderer test rebuilt from the capture.

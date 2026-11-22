@@ -11,22 +11,52 @@ enum MarkRenderer {
     static func draw(_ marks: [Stroke], in context: CGContext, bounds: CGRect, frameSize: Size,
                      pixelsPerPoint: CGFloat = 1, minimumBadgeHeight: CGFloat = 0,
                      project: (NormalizedPoint) -> CGPoint?) {
-        let badges = marks.compactMap { mark -> (Stroke, CGPoint, Arrowhead?)? in
+        let badges = drawInkAndPlaceBadges(marks, in: context, bounds: bounds, frameSize: frameSize,
+                                           pixelsPerPoint: pixelsPerPoint, minimumBadgeHeight: minimumBadgeHeight,
+                                           project: project)
+        for (id, badge) in badges { drawNumberedBadge(id, in: badge, context: context) }
+    }
+
+    /// Draws every mark's ink, then returns where each badge goes, in drawing order.
+    static func drawInkAndPlaceBadges(_ marks: [Stroke], in context: CGContext, bounds: CGRect, frameSize: Size,
+                                      pixelsPerPoint: CGFloat = 1, minimumBadgeHeight: CGFloat = 0,
+                                      project: (NormalizedPoint) -> CGPoint?) -> [(MarkID, CGRect)] {
+        let badges = marks.compactMap { mark -> (Stroke, Placement)? in
             guard !mark.isDeleted, mark.absorbedInto == nil,
                   let placement = drawInk(mark, in: context, frameSize: frameSize,
                                           pixelsPerPoint: pixelsPerPoint, project: project) else { return nil }
-            return (mark, placement.anchor, placement.arrowhead)
+            return (mark, placement)
         }
         let height = max(badgeHeight * pixelsPerPoint, minimumBadgeHeight)
-        for (mark, anchor, arrowhead) in badges {
-            drawBadge(mark, at: anchor, arrowhead: arrowhead, in: context, bounds: bounds,
-                      requestedHeight: height, scale: pixelsPerPoint)
+        // A badge must not hide an arrowhead or another badge, so each one takes its first clear spot.
+        let heads = badges.compactMap { $0.1.arrowhead?.bounds.insetBy(dx: -6 * pixelsPerPoint, dy: -6 * pixelsPerPoint) }
+        var placed: [(MarkID, CGRect)] = []
+        for (mark, placement) in badges {
+            let candidates = badgeCandidates(mark, placement: placement, bounds: bounds,
+                                             requestedHeight: height, scale: pixelsPerPoint)
+            guard let first = candidates.first else { continue }
+            let ownHead = placement.arrowhead.map { $0.bounds.insetBy(dx: -6 * pixelsPerPoint, dy: -6 * pixelsPerPoint) }
+            let gap = 2 * pixelsPerPoint
+            let badge = candidates.first { candidate in
+                let padded = candidate.insetBy(dx: -gap, dy: -gap)
+                return !heads.contains { $0 != ownHead && $0.intersects(padded) } && !placed.contains { $0.1.intersects(padded) }
+            } ?? first
+            placed.append((mark.id, badge))
         }
+        return placed
+    }
+
+    private struct Placement {
+        /// Preferred badge centres, best first.
+        var anchors: [CGPoint]
+        var arrowhead: Arrowhead?
+        /// Middle of an arrow's shaft, for arrows whose start sits on another mark.
+        var shaftMiddle: Arrowhead?
     }
 
     private static func drawInk(_ mark: Stroke, in context: CGContext, frameSize: Size,
                                 pixelsPerPoint: CGFloat, project: (NormalizedPoint) -> CGPoint?)
-        -> (anchor: CGPoint, arrowhead: Arrowhead?)? {
+        -> Placement? {
         context.saveGState()
         defer { context.restoreGState() }
         context.setStrokeColor(red)
@@ -36,8 +66,9 @@ enum MarkRenderer {
         context.setLineCap(.round)
         context.setLineJoin(.round)
 
-        let anchor: CGPoint
+        var anchors: [CGPoint]
         var arrowhead: Arrowhead?
+        var shaftMiddle: Arrowhead?
         if case .area(let area) = mark.shape, let box = area.fittedBounds {
             guard let topLeft = project(NormalizedPoint(x: box.origin.x / frameSize.width,
                                                         y: box.origin.y / frameSize.height)),
@@ -50,31 +81,67 @@ enum MarkRenderer {
             if case .rectangle = area {
                 let radius = min(5 * pixelsPerPoint, rect.width / 4, rect.height / 4)
                 context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
-                anchor = topLeft
+                anchors = [topLeft, CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.minY),
+                           CGPoint(x: rect.maxX, y: rect.minY)]
             } else {
                 context.addEllipse(in: rect)
                 let diagonal = sqrt(0.5)
-                anchor = CGPoint(x: rect.midX - diagonal * rect.width / 2,
-                                 y: rect.midY + diagonal * rect.height / 2)
+                // Upper left first, then the other diagonals, then the top and side midpoints.
+                let directions: [(CGFloat, CGFloat)] = [(-diagonal, diagonal), (diagonal, diagonal), (-diagonal, -diagonal),
+                                                        (diagonal, -diagonal), (0, 1), (-1, 0), (1, 0), (0, -1)]
+                let center = CGPoint(x: rect.midX, y: rect.midY)
+                let rx = rect.width / 2, ry = rect.height / 2
+                anchors = directions.map { CGPoint(x: center.x + $0.0 * rx, y: center.y + $0.1 * ry) }
             }
             context.strokePath()
         } else {
             guard let projected = project(mark.badgeAnchor) else { return nil }
+            let anchor: CGPoint
             if mark.shaftReversed == true, case .arrow = mark.shape,
                let tail = mark.renderedPoints.last.flatMap(project) {
                 anchor = tail
             } else {
                 anchor = projected
             }
+            anchors = [anchor]
             if mark.shape == .pin {
                 context.fillEllipse(in: CGRect(x: anchor.x - stroke, y: anchor.y - stroke,
                                                width: 2 * stroke, height: 2 * stroke))
             } else {
                 arrowhead = drawFreehand(mark, at: projected, in: context, pixelsPerPoint: pixelsPerPoint, project: project)
+                if case .arrow(_?, _) = mark.shape {
+                    shaftMiddle = middle(of: [projected] + mark.renderedPoints.compactMap(project), scale: pixelsPerPoint)
+                }
             }
         }
 
-        return (anchor, arrowhead)
+        return Placement(anchors: anchors, arrowhead: arrowhead, shaftMiddle: shaftMiddle)
+    }
+
+    /// The point halfway along a path, with the local direction of travel.
+    private static func middle(of points: [CGPoint], scale: CGFloat) -> Arrowhead? {
+        guard points.count >= 2 else { return nil }
+        let lengths = zip(points, points.dropFirst()).map { hypot($1.x - $0.x, $1.y - $0.y) }
+        let total = lengths.reduce(0, +)
+        guard total.isFinite, total > 0 else { return nil }
+        var travelled: CGFloat = 0
+        for (index, length) in lengths.enumerated() {
+            if travelled + length >= total / 2, length > 0 {
+                let t = (total / 2 - travelled) / length
+                let a = points[index], b = points[index + 1]
+                let point = CGPoint(x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y))
+                // Read the direction over a wider span so jitter does not tilt the badge offset.
+                let before = points[max(0, index - 3)], after = points[min(points.count - 1, index + 4)]
+                let span = hypot(after.x - before.x, after.y - before.y)
+                let direction = span > 0 ? CGVector(dx: (after.x - before.x) / span, dy: (after.y - before.y) / span)
+                    : CGVector(dx: (b.x - a.x) / length, dy: (b.y - a.y) / length)
+                let half = inkWidth * scale / 2
+                return Arrowhead(tip: point, direction: direction,
+                                 bounds: CGRect(origin: point, size: .zero).insetBy(dx: -half, dy: -half))
+            }
+            travelled += length
+        }
+        return nil
     }
 
     private static func drawFreehand(_ mark: Stroke, at anchor: CGPoint, in context: CGContext,
@@ -129,7 +196,7 @@ enum MarkRenderer {
         }
         guard distance.isFinite, distance > 0 else { return nil }
         let dx = (tip.x - back.x) / distance, dy = (tip.y - back.y) / distance
-        let length = min(10 * scale, distance)
+        let length = min(13 * scale, distance)
         let spread = 0.55 * length
         let base = CGPoint(x: tip.x - length * dx, y: tip.y - length * dy)
         let left = CGPoint(x: base.x - spread * dy, y: base.y + spread * dx)
@@ -145,8 +212,8 @@ enum MarkRenderer {
                          bounds: headBounds.insetBy(dx: -halfStroke, dy: -halfStroke))
     }
 
-    private static func arrowBadge(beyond head: Arrowhead, width: CGFloat, height: CGFloat,
-                                   gap: CGFloat, in bounds: CGRect) -> CGRect {
+    private static func arrowBadges(beyond head: Arrowhead, width: CGFloat, height: CGFloat,
+                                    gap: CGFloat, in bounds: CGRect) -> [CGRect] {
         func badge(toward direction: CGVector, clearance: CGFloat) -> CGRect {
             let dx = direction.dx, dy = direction.dy
             let offset = abs(dx) * width / 2 + abs(dy) * height / 2 + clearance
@@ -157,62 +224,51 @@ enum MarkRenderer {
 
         let dx = head.direction.dx, dy = head.direction.dy
         // Beside the head first: past the tip the badge covers whatever the arrow points at.
-        for direction in [CGVector(dx: -dy, dy: dx), CGVector(dx: dy, dy: -dx)] {
+        let sides = [CGVector(dx: -dy, dy: dx), CGVector(dx: dy, dy: -dx)].compactMap { direction -> CGRect? in
             let edgeX = direction.dx >= 0 ? head.bounds.maxX : head.bounds.minX
             let edgeY = direction.dy >= 0 ? head.bounds.maxY : head.bounds.minY
             let clearance = (edgeX - head.tip.x) * direction.dx + (edgeY - head.tip.y) * direction.dy
             let side = badge(toward: direction, clearance: clearance + gap)
-            if !side.intersects(head.bounds) { return side }
+            return side.intersects(head.bounds) ? nil : side
         }
-        return badge(toward: head.direction, clearance: gap)
+        return sides + [badge(toward: head.direction, clearance: gap)]
     }
 
-    private static func drawBadge(_ mark: Stroke, at anchor: CGPoint, arrowhead: Arrowhead?, in context: CGContext,
-                                  bounds: CGRect, requestedHeight: CGFloat, scale: CGFloat) {
-        context.saveGState()
-        defer { context.restoreGState() }
-        context.setFillColor(red)
+    private static func badgeCandidates(_ mark: Stroke, placement: Placement, bounds: CGRect,
+                                        requestedHeight: CGFloat, scale: CGFloat) -> [CGRect] {
         let height: CGFloat
-        if arrowhead != nil {
+        if placement.arrowhead != nil {
             let widthAtOnePoint = MarkBadgeGeometry.numberedBadgeWidth(id: mark.id, height: 1)
             height = min(requestedHeight, bounds.height, bounds.width / widthAtOnePoint)
         } else {
             height = requestedHeight
         }
-        let magnification = height / badgeHeight
-        let text = NSAttributedString(string: String(mark.id.rawValue), attributes: [
-            NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica-Bold" as CFString, 12 * magnification, nil),
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 1, alpha: 1)
-        ])
-        let line = CTLineCreateWithAttributedString(text)
-        let ink = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
-        let badge: CGRect
-        if mark.shape == .pin {
+        let width = MarkBadgeGeometry.numberedBadgeWidth(id: mark.id, height: height)
+        if mark.shape == .pin, let anchor = placement.anchors.first {
             let dot = Point(x: anchor.x - bounds.minX, y: bounds.maxY - anchor.y)
             let pinBadge = MarkBadgeGeometry.pinBadge(at: dot, in: Size(width: bounds.width, height: bounds.height),
                                                       id: mark.id, height: height, gap: MarkBadgeGeometry.pinGap * scale)
-            badge = CGRect(x: bounds.minX + pinBadge.origin.x, y: bounds.maxY - pinBadge.origin.y - height,
-                           width: pinBadge.size.width, height: height)
-        } else if let arrowhead {
-            let width = MarkBadgeGeometry.numberedBadgeWidth(id: mark.id, height: height)
-            let badgeAnchor: Arrowhead
-            if case .arrow(_, _?) = mark.shape {
-                badgeAnchor = Arrowhead(tip: anchor,
-                                       direction: CGVector(dx: -arrowhead.direction.dx, dy: -arrowhead.direction.dy),
-                                       bounds: CGRect(origin: anchor, size: .zero)
-                                           .insetBy(dx: -inkWidth * scale / 2, dy: -inkWidth * scale / 2))
-            } else {
-                badgeAnchor = arrowhead
+            return [CGRect(x: bounds.minX + pinBadge.origin.x, y: bounds.maxY - pinBadge.origin.y - height,
+                           width: pinBadge.size.width, height: height)]
+        }
+        if let arrowhead = placement.arrowhead, let anchor = placement.anchors.first {
+            let gap = MarkBadgeGeometry.arrowGap * scale
+            guard case .arrow(_, _?) = mark.shape else {
+                return arrowBadges(beyond: arrowhead, width: width, height: height, gap: gap, in: bounds)
             }
-            badge = arrowBadge(beyond: badgeAnchor, width: width, height: height,
-                               gap: MarkBadgeGeometry.arrowGap * scale, in: bounds)
-        } else {
-            let width = max(height, ceil(ink.width) + 10 * magnification)
+            // An arrow with a target is numbered away from it: mid-shaft when the start also sits on a mark, else at the tail.
+            let tail = Arrowhead(tip: anchor,
+                                 direction: CGVector(dx: -arrowhead.direction.dx, dy: -arrowhead.direction.dy),
+                                 bounds: CGRect(origin: anchor, size: .zero)
+                                     .insetBy(dx: -inkWidth * scale / 2, dy: -inkWidth * scale / 2))
+            let middle = placement.shaftMiddle.map { arrowBadges(beyond: $0, width: width, height: height, gap: gap, in: bounds) }
+            return (middle.map { Array($0.dropLast()) } ?? []) + arrowBadges(beyond: tail, width: width, height: height, gap: gap, in: bounds)
+        }
+        return placement.anchors.map { anchor in
             let x = max(bounds.minX, min(anchor.x - width / 2, bounds.maxX - width))
             let y = max(bounds.minY, min(anchor.y - height / 2, bounds.maxY - height))
-            badge = CGRect(x: x, y: y, width: width, height: height)
+            return CGRect(x: x, y: y, width: width, height: height)
         }
-        drawNumberedBadge(mark.id, in: badge, context: context)
     }
 
     /// Identical colour, Helvetica Bold numeral and pill geometry in overlays and captions.

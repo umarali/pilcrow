@@ -28,7 +28,7 @@ final class MarkRendererTests: XCTestCase {
             }
         }
         // The number sits beside the head, leaving the area past the tip (the target) clear.
-        XCTAssertTrue(isRed(image, x: 228, y: 240))
+        XCTAssertTrue(isRed(image, x: 220, y: 240))
         XCTAssertTrue(isRed(image, x: 250, y: 238))
         XCTAssertFalse(isRed(image, x: 250, y: 252))
         XCTAssertFalse(isRed(image, x: 250, y: 262))
@@ -114,6 +114,40 @@ final class MarkRendererTests: XCTestCase {
         let edges = (0..<crop.height).flatMap { [(0, $0), (crop.width - 1, $0)] }
         XCTAssertFalse(edges.contains { red($0.0, $0.1) }, "The crop must include the whole enlarged badge")
         XCTAssertTrue((0..<crop.height).contains { y in (0..<crop.width).contains { red($0, y) } })
+    }
+
+    /// Live capture 2026-11-22: oval [4], an arrow [5] from [4] to oval [6] drawn afterwards around its tip.
+    func testBadgesKeepClearOfAnArrowheadAndOfTheShapeTheArrowLeaves() throws {
+        let size = Size(width: 1920, height: 1080)
+        let frame = Frame.ID()
+        func normalized(_ x: Double, _ y: Double) -> NormalizedPoint { NormalizedPoint(x: x / 1920, y: y / 1080) }
+        func oval(_ id: MarkID, _ x: Double, _ y: Double, _ width: Double, _ height: Double) -> Stroke {
+            let box = PointRect(origin: Point(x: x, y: y), size: Size(width: width, height: height))
+            return Stroke(id: id, frameID: frame, downTime: 0, upTime: 1, points: [normalized(x, y)],
+                          badgeAnchor: normalized(x, y), shape: .area(.ellipse(box)))
+        }
+        let shaft: [(Double, Double)] = [(1516, 422), (1531, 423), (1552, 428), (1575, 434), (1596, 440), (1617, 447),
+                                         (1638, 453), (1650, 457), (1662, 461), (1674, 466), (1687, 472), (1698, 477)]
+        let samples = shaft.map { normalized($0.0, $0.1) }
+        let arrow = Stroke(id: 5, frameID: frame, downTime: 0, upTime: 1, points: samples, badgeAnchor: samples[0],
+                           shape: .arrow(from: 4, to: 6))
+        let marks = [oval(4, 1279, 344, 236, 146), arrow, oval(6, 1631, 441, 279, 210)]
+        let context = try XCTUnwrap(CGContext(data: nil, width: 1920, height: 1080, bitsPerComponent: 8, bytesPerRow: 0,
+                                              space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                              bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let badges = Dictionary(uniqueKeysWithValues: MarkRenderer.drawInkAndPlaceBadges(
+            marks, in: context, bounds: CGRect(x: 0, y: 0, width: 1920, height: 1080), frameSize: size,
+            project: { CGPoint(x: $0.x * 1920, y: (1 - $0.y) * 1080) }))
+        let tip = CGPoint(x: 1698, y: 1080 - 477)
+        let head = CGRect(x: tip.x - 16, y: tip.y - 10, width: 18, height: 20)
+        XCTAssertFalse(try XCTUnwrap(badges[6]).intersects(head), "[6] must not hide the arrowhead of [5]")
+        let leaving = CGPoint(x: 1516, y: 1080 - 422)
+        XCTAssertGreaterThan(hypot(try XCTUnwrap(badges[5]).midX - leaving.x, try XCTUnwrap(badges[5]).midY - leaving.y), 40,
+                             "[5] belongs mid-shaft, not on the outline of [4]")
+        let all = Array(badges.values)
+        for (index, badge) in all.enumerated() {
+            for other in all[(index + 1)...] { XCTAssertFalse(badge.intersects(other)) }
+        }
     }
 
     private func stroke(_ shape: MarkShape, id: MarkID, points: [CGPoint], canvas: CGSize,
