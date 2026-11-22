@@ -49,14 +49,16 @@ final class AnnotationSession {
     private let outbox: OutboxStore
     private let exports: ExportStore
     private let hotKeys: HotKeys
+    let colour: PilcrowColour
     private let closing: () -> Void
     private let completed: (ApprovalExport?, String) -> Void
 
-    init(exports: ExportStore, outbox: OutboxStore, hotKeys: HotKeys,
+    init(exports: ExportStore, outbox: OutboxStore, hotKeys: HotKeys, colour: PilcrowColour,
          closing: @escaping () -> Void, completed: @escaping (ApprovalExport?, String) -> Void) {
         self.outbox = outbox
         self.exports = exports
         self.hotKeys = hotKeys
+        self.colour = colour
         self.closing = closing
         self.completed = completed
     }
@@ -424,8 +426,9 @@ final class AnnotationSession {
         let snapshot = core
         let images = originals
         let voiceResults = narration?.voiceResults ?? VoiceRecording.Results()
-        let result = await Task.detached {
-            Export.write(session: snapshot, message: message, originals: images, to: folder, voiceResults: voiceResults)
+        let result = await Task.detached { [colour] in
+            Export.write(session: snapshot, message: message, originals: images, to: folder,
+                         voiceResults: voiceResults, colour: colour)
         }.value
         if !result.failedFiles.isEmpty { notes += " · \(result.failedFiles.count) files failed" }
 

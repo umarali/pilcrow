@@ -6,25 +6,31 @@ import PilcrowCore
 enum MarkRenderer {
     private static let badgeHeight = CGFloat(MarkBadgeGeometry.height)
     private static let inkWidth: CGFloat = 3
-    private static let red = CGColor(srgbRed: 0.89, green: 0.08, blue: 0.12, alpha: 1)
+    private static let haloWidth: CGFloat = 1.5
+    private static let halo = CGColor(gray: 1, alpha: 0.9)
 
     static func draw(_ marks: [Stroke], in context: CGContext, bounds: CGRect, frameSize: Size,
                      pixelsPerPoint: CGFloat = 1, minimumBadgeHeight: CGFloat = 0,
+                     colour: PilcrowColour = .coral,
                      project: (NormalizedPoint) -> CGPoint?) {
         let badges = drawInkAndPlaceBadges(marks, in: context, bounds: bounds, frameSize: frameSize,
                                            pixelsPerPoint: pixelsPerPoint, minimumBadgeHeight: minimumBadgeHeight,
-                                           project: project)
-        for (id, badge) in badges { drawNumberedBadge(id, in: badge, context: context) }
+                                           colour: colour, project: project)
+        for (id, badge) in badges {
+            drawNumberedBadge(id, in: badge, context: context, colour: colour, scale: pixelsPerPoint)
+        }
     }
 
     /// Draws every mark's ink, then returns where each badge goes, in drawing order.
     static func drawInkAndPlaceBadges(_ marks: [Stroke], in context: CGContext, bounds: CGRect, frameSize: Size,
                                       pixelsPerPoint: CGFloat = 1, minimumBadgeHeight: CGFloat = 0,
+                                      colour: PilcrowColour = .coral,
                                       project: (NormalizedPoint) -> CGPoint?) -> [(MarkID, CGRect)] {
+        let ink = colour.ink
         let badges = marks.compactMap { mark -> (Stroke, Placement)? in
             guard !mark.isDeleted, mark.absorbedInto == nil,
                   let placement = drawInk(mark, in: context, frameSize: frameSize,
-                                          pixelsPerPoint: pixelsPerPoint, project: project) else { return nil }
+                                          ink: ink, pixelsPerPoint: pixelsPerPoint, project: project) else { return nil }
             return (mark, placement)
         }
         let height = max(badgeHeight * pixelsPerPoint, minimumBadgeHeight)
@@ -54,18 +60,34 @@ enum MarkRenderer {
         var shaftMiddle: Arrowhead?
     }
 
-    private static func drawInk(_ mark: Stroke, in context: CGContext, frameSize: Size,
-                                pixelsPerPoint: CGFloat, project: (NormalizedPoint) -> CGPoint?)
-        -> Placement? {
+    static func stroke(_ path: CGPath, in context: CGContext, ink: CGColor, width: CGFloat, scale: CGFloat) {
         context.saveGState()
         defer { context.restoreGState() }
-        context.setStrokeColor(red)
-        context.setFillColor(red)
-        let stroke = inkWidth * pixelsPerPoint
-        context.setLineWidth(stroke)
         context.setLineCap(.round)
         context.setLineJoin(.round)
+        context.setStrokeColor(halo)
+        context.setLineWidth(width + 2 * haloWidth * scale)
+        context.addPath(path)
+        context.strokePath()
+        context.setStrokeColor(ink)
+        context.setLineWidth(width)
+        context.addPath(path)
+        context.strokePath()
+    }
 
+    private static func dot(_ rect: CGRect, in context: CGContext, ink: CGColor, scale: CGFloat) {
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.setFillColor(halo)
+        context.fillEllipse(in: rect.insetBy(dx: -haloWidth * scale, dy: -haloWidth * scale))
+        context.setFillColor(ink)
+        context.fillEllipse(in: rect)
+    }
+
+    private static func drawInk(_ mark: Stroke, in context: CGContext, frameSize: Size,
+                                ink: CGColor, pixelsPerPoint: CGFloat, project: (NormalizedPoint) -> CGPoint?)
+        -> Placement? {
+        let width = inkWidth * pixelsPerPoint
         var anchors: [CGPoint]
         var arrowhead: Arrowhead?
         var shaftMiddle: Arrowhead?
@@ -78,13 +100,14 @@ enum MarkRenderer {
                   topLeft.x < bottomRight.x, bottomRight.y < topLeft.y else { return nil }
             let rect = CGRect(x: topLeft.x, y: bottomRight.y, width: bottomRight.x - topLeft.x,
                               height: topLeft.y - bottomRight.y)
+            let path: CGPath
             if case .rectangle = area {
                 let radius = min(5 * pixelsPerPoint, rect.width / 4, rect.height / 4)
-                context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+                path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
                 anchors = [topLeft, CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.minY),
                            CGPoint(x: rect.maxX, y: rect.minY)]
             } else {
-                context.addEllipse(in: rect)
+                path = CGPath(ellipseIn: rect, transform: nil)
                 let diagonal = sqrt(0.5)
                 // Upper left first, then the other diagonals, then the top and side midpoints.
                 let directions: [(CGFloat, CGFloat)] = [(-diagonal, diagonal), (diagonal, diagonal), (-diagonal, -diagonal),
@@ -93,7 +116,7 @@ enum MarkRenderer {
                 let rx = rect.width / 2, ry = rect.height / 2
                 anchors = directions.map { CGPoint(x: center.x + $0.0 * rx, y: center.y + $0.1 * ry) }
             }
-            context.strokePath()
+            stroke(path, in: context, ink: ink, width: width, scale: pixelsPerPoint)
         } else {
             guard let projected = project(mark.badgeAnchor) else { return nil }
             let anchor: CGPoint
@@ -105,10 +128,11 @@ enum MarkRenderer {
             }
             anchors = [anchor]
             if mark.shape == .pin {
-                context.fillEllipse(in: CGRect(x: anchor.x - stroke, y: anchor.y - stroke,
-                                               width: 2 * stroke, height: 2 * stroke))
+                dot(CGRect(x: anchor.x - width, y: anchor.y - width, width: 2 * width, height: 2 * width),
+                    in: context, ink: ink, scale: pixelsPerPoint)
             } else {
-                arrowhead = drawFreehand(mark, at: projected, in: context, pixelsPerPoint: pixelsPerPoint, project: project)
+                arrowhead = drawFreehand(mark, at: projected, in: context, ink: ink,
+                                         pixelsPerPoint: pixelsPerPoint, project: project)
                 if case .arrow(_?, _) = mark.shape {
                     shaftMiddle = middle(of: [projected] + mark.renderedPoints.compactMap(project), scale: pixelsPerPoint)
                 }
@@ -144,7 +168,7 @@ enum MarkRenderer {
         return nil
     }
 
-    private static func drawFreehand(_ mark: Stroke, at anchor: CGPoint, in context: CGContext,
+    private static func drawFreehand(_ mark: Stroke, at anchor: CGPoint, in context: CGContext, ink: CGColor,
                                      pixelsPerPoint: CGFloat, project: (NormalizedPoint) -> CGPoint?) -> Arrowhead? {
         let path = CGMutablePath()
         var previous = anchor
@@ -161,17 +185,16 @@ enum MarkRenderer {
             previous = point
             moved = true
         }
+        let width = inkWidth * pixelsPerPoint
         if moved {
             path.addLine(to: previous)
             if arrow, mark.shaftReversed == true { arrowPoints.reverse() }
             let head = arrow ? addArrowhead(to: path, points: arrowPoints, scale: pixelsPerPoint) : nil
-            context.addPath(path)
-            context.strokePath()
+            stroke(path, in: context, ink: ink, width: width, scale: pixelsPerPoint)
             return head
         } else {
-            let stroke = inkWidth * pixelsPerPoint
-            context.fillEllipse(in: CGRect(x: anchor.x - stroke / 2, y: anchor.y - stroke / 2,
-                                           width: stroke, height: stroke))
+            dot(CGRect(x: anchor.x - width / 2, y: anchor.y - width / 2, width: width, height: width),
+                in: context, ink: ink, scale: pixelsPerPoint)
             return nil
         }
     }
@@ -272,14 +295,20 @@ enum MarkRenderer {
     }
 
     /// Identical colour, Helvetica Bold numeral and pill geometry in overlays and captions.
-    static func drawNumberedBadge(_ id: MarkID, in badge: CGRect, context: CGContext) {
+    static func drawNumberedBadge(_ id: MarkID, in badge: CGRect, context: CGContext,
+                                  colour: PilcrowColour, scale: CGFloat = 1) {
         context.saveGState()
         defer { context.restoreGState() }
-        context.setFillColor(red)
         let height = badge.height
+        let outline = haloWidth * scale
+        let outer = badge.insetBy(dx: -outline, dy: -outline)
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.addPath(CGPath(roundedRect: outer, cornerWidth: outer.height / 2, cornerHeight: outer.height / 2, transform: nil))
+        context.fillPath()
+        context.setFillColor(colour.ink)
         let text = NSAttributedString(string: String(id.rawValue), attributes: [
             NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica-Bold" as CFString, 12 * height / badgeHeight, nil),
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 1, alpha: 1)
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): colour.badgeText
         ])
         let line = CTLineCreateWithAttributedString(text)
         let ink = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)

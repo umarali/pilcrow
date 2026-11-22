@@ -58,12 +58,12 @@ final class SettingsTests: XCTestCase {
         }
     }
 
-    func testAccessFooterForEveryPermissionCombination() {
-        let screenOff = SettingsAccessLine(text: "Screen Recording is off. Pilcrow needs it to see your screen.", action: .screen)
-        let micOff = SettingsAccessLine(text: "Microphone is off. Marks still work; Pilcrow can't hear you.", action: .microphone)
+    func testAccessStatesForEveryPermissionCombination() {
+        let screenOff = SettingsAccessLine(text: "Pilcrow can’t capture without it.", action: .screen)
+        let micOff = SettingsAccessLine(text: "Microphone is off. Marks work, voice won’t.", action: .microphone)
         for microphone in SettingsMicrophoneAccess.allCases {
             XCTAssertEqual(SettingsAccessLine.lines(screenRecording: true, microphone: microphone),
-                           microphone == .on ? [SettingsAccessLine(text: "✓ Screen Recording and Microphone are on.", action: nil)] : [micOff])
+                           microphone == .on ? [SettingsAccessLine(text: "Screen Recording and Microphone are on.", action: nil)] : [micOff])
             XCTAssertEqual(SettingsAccessLine.lines(screenRecording: false, microphone: microphone),
                            microphone == .on ? [screenOff] : [screenOff, micOff])
         }

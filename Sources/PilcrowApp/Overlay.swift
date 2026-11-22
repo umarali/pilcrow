@@ -89,15 +89,16 @@ final class Canvas: NSView {
         context.setFillColor(CGColor(gray: 0, alpha: 0.01))
         context.fill(dirtyRect)
         let frameSize = Size(width: bounds.width, height: bounds.height)
+        let colour = session?.colour ?? .coral
         MarkRenderer.draw(session?.visibleMarks(on: display) ?? [], in: context, bounds: bounds,
-                          frameSize: frameSize) { point in
+                          frameSize: frameSize, colour: colour) { point in
             CGPoint(x: bounds.minX + point.x * bounds.width,
                     y: bounds.minY + (1 - point.y) * bounds.height)
         }
         if ring {
-            context.setStrokeColor(CGColor(srgbRed: 0.89, green: 0.08, blue: 0.12, alpha: 0.85))
-            context.setLineWidth(2)
-            context.strokeEllipse(in: NSRect(x: pointer.x - 10, y: pointer.y - 10, width: 20, height: 20))
+            let rect = NSRect(x: pointer.x - 10, y: pointer.y - 10, width: 20, height: 20)
+            MarkRenderer.stroke(CGPath(ellipseIn: rect, transform: nil), in: context,
+                                ink: colour.ink, width: 2, scale: 1)
         }
         if !hintFrame.isEmpty {
             NSColor(white: 0.16, alpha: 0.96).setFill()

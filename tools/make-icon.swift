@@ -49,7 +49,7 @@ func render(size: Int) -> Data {
                  startAngle: -.pi / 2, endAngle: .pi / 2, clockwise: true)
     badge.closeSubpath()
     context.addPath(badge)
-    context.setFillColor(CGColor(srgbRed: 0.89, green: 0.08, blue: 0.12, alpha: 1))
+    context.setFillColor(CGColor(srgbRed: 240 / 255, green: 100 / 255, blue: 79 / 255, alpha: 1))
     context.drawPath(using: .eoFill)
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!

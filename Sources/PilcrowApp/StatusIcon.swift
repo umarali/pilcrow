@@ -4,7 +4,11 @@ import AppKit
 enum StatusIcon {
     enum State { case idle, annotating, warning }
 
-    static func image(_ state: State) -> NSImage {
+    static func image(_ state: State, colour: PilcrowColour = .coral, dark: Bool? = nil) -> NSImage {
+        let fill = state == .annotating ? NSColor(name: nil) { appearance in
+            let useDark = dark ?? (appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+            return NSColor(cgColor: colour.accent(dark: useDark))!
+        } : .black
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
             let path = NSBezierPath(ovalIn: NSRect(x: 1, y: 1, width: 16, height: 16))
             // The coordinates below are the supplied 18 × 18 mark, reflected into AppKit's y-up space.
@@ -22,11 +26,12 @@ enum StatusIcon {
                            startAngle: 270, endAngle: 90, clockwise: true)
             path.close()
             path.windingRule = .evenOdd
-            (state == .annotating ? NSColor(srgbRed: 0.89, green: 0.08, blue: 0.12, alpha: 1) : .black).setFill()
+            fill.setFill()
             path.fill()
             return true
         }
         image.isTemplate = state != .annotating
+        if state == .annotating { image.cacheMode = .never }
         return image
     }
 }

@@ -12,9 +12,10 @@ final class StatusIconTests: XCTestCase {
         }
     }
 
-    func testCutoutAndRedBadge() throws {
-        for state in [StatusIcon.State.idle, .annotating, .warning] {
-            let image = StatusIcon.image(state)
+    func testCutoutAndPickedBadgeColour() throws {
+        let appearances: [(StatusIcon.State, Bool)] = [(.idle, false), (.annotating, false), (.annotating, true), (.warning, false)]
+        for (state, dark) in appearances {
+            let image = StatusIcon.image(state, colour: .teal, dark: dark)
             let rep = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 180, pixelsHigh: 180,
                 bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                 colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
@@ -29,9 +30,13 @@ final class StatusIconTests: XCTestCase {
             XCTAssertLessThan(stem.alphaComponent, 0.01)
             XCTAssertGreaterThan(disc.alphaComponent, 0.99)
             if state == .annotating {
-                XCTAssertEqual(disc.redComponent, 0.89, accuracy: 0.02)
-                XCTAssertEqual(disc.greenComponent, 0.08, accuracy: 0.02)
-                XCTAssertEqual(disc.blueComponent, 0.12, accuracy: 0.02)
+                XCTAssertEqual(disc.redComponent, (dark ? 61 : 18) / 255, accuracy: 0.02)
+                XCTAssertEqual(disc.greenComponent, (dark ? 210 : 162) / 255, accuracy: 0.02)
+                XCTAssertEqual(disc.blueComponent, (dark ? 208 : 166) / 255, accuracy: 0.02)
+            } else {
+                XCTAssertEqual(disc.redComponent, 0, accuracy: 0.02)
+                XCTAssertEqual(disc.greenComponent, 0, accuracy: 0.02)
+                XCTAssertEqual(disc.blueComponent, 0, accuracy: 0.02)
             }
         }
     }

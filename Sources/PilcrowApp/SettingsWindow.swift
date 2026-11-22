@@ -13,7 +13,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
     private let changed: () -> Void
     private let model = SettingsPresentation()
     private let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 480),
-        styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
     private var contentObservation: AnyCancellable?
     private var resizeScheduled = false
     private var monitor: Any?
@@ -22,7 +22,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
     private var captureRefresh: Task<Void, Never>?
 
     init(hotKeys: HotKeys, recorder: ShortcutRecorder, permissions: Permissions, outbox: OutboxStore,
-         canClear: @escaping () -> Bool, clear: @escaping () -> Void, changed: @escaping () -> Void) {
+         colour: PilcrowColour, canClear: @escaping () -> Bool, clear: @escaping () -> Void,
+         colourChanged: @escaping (PilcrowColour) -> Void, changed: @escaping () -> Void) {
         self.hotKeys = hotKeys
         self.recorder = recorder
         self.permissions = permissions
@@ -31,8 +32,12 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         self.changed = changed
         super.init()
         window.title = "Pilcrow Settings"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.delegate = self
+        model.colour = colour
+        model.colourChanged = colourChanged
         model.record = { [weak self] in self?.record($0) }
         model.reset = { [weak self] in self?.reset($0) }
         model.copy = { [weak self] in self?.copyCommand($0) }

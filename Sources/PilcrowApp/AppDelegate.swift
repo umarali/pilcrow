@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return registered
     }, restore: { [weak self] in self?.registerAnnotateHotKey() })
     private var settings: SettingsWindow?
+    private var colour = PilcrowColour.load(from: .standard)
     private var annotateRetry: Task<Void, Never>?
     private var session: AnnotationSession?
     private let exports = ExportStore()
@@ -145,7 +146,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateStatusIcon() {
         let warning = !shortcutWarning.isHidden
-        item.button?.image = StatusIcon.image(session != nil && !finishing ? .annotating : (warning ? .warning : .idle))
+        item.button?.image = StatusIcon.image(session != nil && !finishing ? .annotating : (warning ? .warning : .idle),
+                                             colour: colour)
         item.button?.title = warning ? " ⚠" : ""
         item.button?.imagePosition = .imageLeft
     }
@@ -186,8 +188,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func presentSettings() {
         if settings == nil {
             settings = SettingsWindow(hotKeys: hotKeys, recorder: recorder, permissions: permissions,
-                outbox: outbox, canClear: { [weak self] in self?.canClearCaptures == true },
+                outbox: outbox, colour: colour, canClear: { [weak self] in self?.canClearCaptures == true },
                 clear: { [weak self] in self?.clearSentCaptures() },
+                colourChanged: { [weak self] colour in
+                    guard let self else { return }
+                    self.colour = colour
+                    colour.save(to: .standard)
+                    self.updateStatusIcon()
+                },
                 changed: { [weak self] in self?.updateShortcutDisplay() })
         }
         settings?.show()
@@ -231,7 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings?.close()
         hud?.dismiss()
         hud = nil
-        let current = AnnotationSession(exports: exports, outbox: outbox, hotKeys: hotKeys, closing: { [weak self] in
+        let current = AnnotationSession(exports: exports, outbox: outbox, hotKeys: hotKeys, colour: colour, closing: { [weak self] in
             self?.finishing = true
             self?.updateStatusIcon()
             self?.start.isEnabled = false

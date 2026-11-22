@@ -136,7 +136,7 @@ enum Export {
     }
 
     static func write(session: Session, message: OutgoingMessage, originals: [Frame.ID: CGImage], to folder: URL,
-                      voiceResults: VoiceRecording.Results = VoiceRecording.Results()) -> Result {
+                      voiceResults: VoiceRecording.Results = VoiceRecording.Results(), colour: PilcrowColour = .coral) -> Result {
         let frames = Dictionary(uniqueKeysWithValues: session.frames.map { ($0.id, $0) })
         let marks = Dictionary(grouping: session.liveMarks, by: \.frameID)
         let frameIDs = Set(message.framePlans.map(\.frameID))
@@ -186,7 +186,7 @@ enum Export {
                         sourceBadgeHeight = max(sourceBadgeHeight, height)
                     }
                     composite = try annotate(image, frame: frame, marks: marks[plan.frameID] ?? [],
-                                             minimumBadgeHeight: ceil(sourceBadgeHeight))
+                                             minimumBadgeHeight: ceil(sourceBadgeHeight), colour: colour)
                 } catch {
                     recordFailure(plan.outputName, error: error)
                     for crop in crops { recordFailure(crop.cropName, error: error) }
@@ -205,13 +205,13 @@ enum Export {
                                     MarkBadgeGeometry.height * sourceScale * CGFloat(size.height) / sourceHeight)
                     let layout = try ExportCaptions.layout(size: size, items: items, badgeHeight: badge, frame: framePanel)
                     let annotated = try annotate(original, frame: frame, marks: marks[plan.frameID] ?? [],
-                        minimumBadgeHeight: badge * sourceHeight / CGFloat(layout.screenshot.height))
+                        minimumBadgeHeight: badge * sourceHeight / CGFloat(layout.screenshot.height), colour: colour)
                     let region: CGImage
                     if let sourceRect {
                         guard let cropped = annotated.cropping(to: sourceRect) else { throw Failure.crop }
                         region = cropped
                     } else { region = annotated }
-                    return try ExportCaptions.render(region, layout: layout)
+                    return try ExportCaptions.render(region, layout: layout, colour: colour)
                 }
                 writeFile(plan.outputName) { url in
                     let items = fixes.filter { $0.frameID == plan.frameID && !$0.words.isEmpty }
@@ -341,13 +341,13 @@ enum Export {
     }
 
     private static func annotate(_ image: CGImage, frame: Frame, marks: [Stroke],
-                                 minimumBadgeHeight: CGFloat) throws -> CGImage {
+                                 minimumBadgeHeight: CGFloat, colour: PilcrowColour) throws -> CGImage {
         let context = try bitmap(width: image.width, height: image.height, colorSpace: image.colorSpace)
         let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
         context.draw(image, in: bounds)
         let scale = min(bounds.width / frame.boundsInPoints.width, bounds.height / frame.boundsInPoints.height)
         MarkRenderer.draw(marks, in: context, bounds: bounds, frameSize: frame.boundsInPoints, pixelsPerPoint: scale,
-                          minimumBadgeHeight: minimumBadgeHeight) { point in
+                          minimumBadgeHeight: minimumBadgeHeight, colour: colour) { point in
             guard let pixel = Geometry.denormalize(point, frame: frame) else { return nil }
             return CGPoint(x: pixel.x, y: bounds.height - pixel.y)
         }

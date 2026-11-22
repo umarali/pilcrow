@@ -6,6 +6,36 @@ import XCTest
 @testable import PilcrowApp
 
 final class MarkRendererTests: XCTestCase {
+    func testArrowUsesPickedInkWithAHaloAlongTheShaftAndHead() throws {
+        let canvas = CGSize(width: 150, height: 120)
+        let arrow = stroke(.arrow(from: nil, to: nil), id: 1,
+                           points: [CGPoint(x: 30, y: 60), CGPoint(x: 110, y: 60)], canvas: canvas)
+        let image = try bitmap(width: 150, height: 120) { context in
+            _ = MarkRenderer.drawInkAndPlaceBadges([arrow], in: context, bounds: CGRect(origin: .zero, size: canvas),
+                frameSize: Size(width: canvas.width, height: canvas.height), colour: .teal) {
+                CGPoint(x: $0.x * canvas.width, y: (1 - $0.y) * canvas.height)
+            }
+        }
+        XCTAssertEqual(try rgb(image, x: 70, y: 60), [18, 162, 166])
+        XCTAssertEqual(try rgb(image, x: 102, y: 64), [18, 162, 166])
+        for point in [(70, 62), (102, 66)] {
+            XCTAssertTrue(try rgb(image, x: point.0, y: point.1).allSatisfy { $0 >= 190 })
+        }
+        XCTAssertEqual(try rgb(image, x: 70, y: 64), [0, 0, 0])
+    }
+
+    func testAmberBadgeHasDarkTextAndAWhiteOutline() throws {
+        let badge = CGRect(x: 20, y: 20, width: 36, height: 24)
+        let image = try bitmap(width: 80, height: 64) {
+            MarkRenderer.drawNumberedBadge(8, in: badge, context: $0, colour: .amber)
+        }
+        XCTAssertEqual(try rgb(image, x: 27, y: 32), [242, 157, 18])
+        XCTAssertEqual(try rgb(image, x: 38, y: 44), [255, 255, 255])
+        XCTAssertEqual(try rgb(image, x: 38, y: 46), [0, 0, 0])
+        let numeral = try (30..<46).flatMap { x in try (25..<40).map { y in try rgb(image, x: x, y: y) } }
+        XCTAssertTrue(numeral.contains([59, 38, 0]), "The rendered numeral uses #3B2600")
+    }
+
     func testArrowFromPinBadgePaintsItsNumberBesideTheCurvedTip() throws {
         let canvas = CGSize(width: 400, height: 300)
         let pin = stroke(.pin, id: 1, points: [CGPoint(x: 90, y: 150)], canvas: canvas)
@@ -97,7 +127,7 @@ final class MarkRendererTests: XCTestCase {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let result = Export.write(session: session, message: message, originals: [frame.id: blank], to: folder)
+        let result = Export.write(session: session, message: message, originals: [frame.id: blank], to: folder, colour: .red)
         XCTAssertTrue(result.failedFiles.isEmpty)
         let png = try XCTUnwrap(result.imageData[plan.cropName])
         let source = try XCTUnwrap(CGImageSourceCreateWithData(png as CFData, nil))
@@ -163,7 +193,7 @@ final class MarkRendererTests: XCTestCase {
 
     private func draw(_ strokes: [Stroke], in context: CGContext, canvas: CGSize) {
         MarkRenderer.draw(strokes, in: context, bounds: CGRect(origin: .zero, size: canvas),
-                          frameSize: Size(width: canvas.width, height: canvas.height)) {
+                          frameSize: Size(width: canvas.width, height: canvas.height), colour: .red) {
             CGPoint(x: $0.x * canvas.width, y: (1 - $0.y) * canvas.height)
         }
     }
@@ -186,5 +216,11 @@ final class MarkRendererTests: XCTestCase {
               let sample = try? bitmap(width: 1, height: 1, draw: { $0.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1)) }),
               let bytes = sample.dataProvider?.data as Data? else { return false }
         return bytes[0] > 150 && bytes[1] < 90 && bytes[2] < 90
+    }
+
+    private func rgb(_ image: CGImage, x: Int, y: Int) throws -> [UInt8] {
+        let bytes = try XCTUnwrap(image.dataProvider?.data as Data?)
+        let offset = (image.height - 1 - y) * image.bytesPerRow + x * (image.bitsPerPixel / 8)
+        return Array(bytes[offset..<(offset + 3)])
     }
 }

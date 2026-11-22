@@ -12,15 +12,20 @@ final class CaptionExportTests: XCTestCase {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let result = Export.write(session: session, message: message, originals: [session.frames[0].id: original], to: folder)
+        let result = Export.write(session: session, message: message, originals: [session.frames[0].id: original],
+                                  to: folder, colour: .teal)
         XCTAssertTrue(result.failedFiles.isEmpty)
         let fixes = FixList.build(session: session).items
         XCTAssertFalse(fixes[0].words.isEmpty)
         XCTAssertTrue(fixes[1].words.isEmpty)
         let spoken = try image(result, "mark-1.png")
         let silent = try image(result, "mark-2.png")
-        XCTAssertGreaterThan(spoken.height, try XCTUnwrap(message.cropPlans.first).outputSize.height)
+        let screenshotHeight = try XCTUnwrap(message.cropPlans.first).outputSize.height
+        XCTAssertGreaterThan(spoken.height, screenshotHeight)
         XCTAssertEqual(silent.height, message.cropPlans[1].outputSize.height)
+        XCTAssertFalse(try tealBands(spoken, xRange: 0..<spoken.width, yRange: 0..<screenshotHeight).isEmpty)
+        XCTAssertEqual(try tealBands(spoken, xRange: 10..<60, yRange: screenshotHeight..<spoken.height).count, 1)
+        XCTAssertFalse(try tealBands(silent, xRange: 0..<silent.width).isEmpty)
     }
 
     func testSixLongCaptionsFitFinalLimitsAndKeepBadgesLegible() throws {
@@ -28,21 +33,21 @@ final class CaptionExportTests: XCTestCase {
         let message = MessageBuilder.build(session: session)
         let fixes = FixList.build(session: session).items
         XCTAssertEqual(fixes.filter { !$0.words.isEmpty }.count, 6)
-        try withExport(session, original) { result, _ in
+        try withExport(session, original, colour: .teal) { result, _ in
             for name in message.attachments {
                 let png = try image(result, name)
                 XCTAssertLessThanOrEqual(max(png.width, png.height), 1600, name)
                 XCTAssertLessThanOrEqual(png.width * png.height, 1_560_000, name)
             }
             let frame = try image(result, "frame-1.png")
-            let bands = try redBands(frame, xRange: 10..<60)
+            let bands = try tealBands(frame, xRange: 10..<60)
             XCTAssertEqual(bands.count, 6, "One caption badge for each spoken mark")
             XCTAssertTrue(bands.allSatisfy { $0.count >= 24 }, "Caption badges must stay legible")
             // Sample just left of each box edge so its vertical outline cannot
             // inflate the measured badge height. Three columns contain two badges each.
             let screenshotBands = try (0..<3).flatMap { column in
                 let center = Int(Double(frame.width) * (0.25 + Double(column) * 0.25))
-                return try redBands(frame, xRange: (center - 8)..<(center - 2), yRange: 0..<(frame.height * 3 / 5))
+                return try tealBands(frame, xRange: (center - 8)..<(center - 2), yRange: 0..<(frame.height * 3 / 5))
             }
             XCTAssertEqual(screenshotBands.count, 6)
             XCTAssertTrue(screenshotBands.allSatisfy { $0.count >= 24 }, "Screenshot badges must stay legible too")
@@ -161,26 +166,29 @@ final class CaptionExportTests: XCTestCase {
         return (session, try XCTUnwrap(context.makeImage()))
     }
 
-    private func withExport(_ session: Session, _ original: CGImage, body: (Export.Result, URL) throws -> Void) throws {
+    private func withExport(_ session: Session, _ original: CGImage, colour: PilcrowColour = .coral,
+                            body: (Export.Result, URL) throws -> Void) throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: folder) }
         let result = Export.write(session: session, message: MessageBuilder.build(session: session),
-                                  originals: [session.frames[0].id: original], to: folder)
+                                  originals: [session.frames[0].id: original], to: folder, colour: colour)
         XCTAssertTrue(result.failedFiles.isEmpty)
         try body(result, folder)
     }
 
-    private func redBands(_ image: CGImage, xRange: Range<Int>, yRange: Range<Int>? = nil) throws -> [Range<Int>] {
+    private func tealBands(_ image: CGImage, xRange: Range<Int>, yRange: Range<Int>? = nil) throws -> [Range<Int>] {
         let pixels = try XCTUnwrap(image.dataProvider?.data as Data?)
         let step = image.bitsPerPixel / 8
         var bands: [Range<Int>] = []
         for y in yRange ?? 0..<image.height {
-            let red = xRange.contains { x in
+            let teal = xRange.contains { x in
                 let offset = y * image.bytesPerRow + x * step
-                return pixels[offset] > 150 && pixels[offset + 1] < 90 && pixels[offset + 2] < 90
+                let red = Int(pixels[offset]), green = Int(pixels[offset + 1]), blue = Int(pixels[offset + 2])
+                // Teal has much less red than green or blue, even along an antialiased edge.
+                return green - red > 90 && abs(green - blue) < 25
             }
-            if red {
+            if teal {
                 if let last = bands.last, last.upperBound == y { bands[bands.count - 1] = last.lowerBound..<(y + 1) }
                 else { bands.append(y..<(y + 1)) }
             }

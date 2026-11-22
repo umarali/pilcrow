@@ -89,7 +89,7 @@ enum ExportCaptions {
         return lines
     }
 
-    static func render(_ image: CGImage, layout: Layout) throws -> CGImage {
+    static func render(_ image: CGImage, layout: Layout, colour: PilcrowColour) throws -> CGImage {
         let space = image.colorSpace?.model == .rgb ? image.colorSpace : CGColorSpace(name: CGColorSpace.sRGB)
         guard let space,
               let context = CGContext(data: nil, width: layout.size.width, height: layout.size.height,
@@ -106,7 +106,8 @@ enum ExportCaptions {
         for row in layout.rows {
             let width = MarkBadgeGeometry.numberedBadgeWidth(id: row.mark, height: layout.badgeHeight)
             MarkRenderer.drawNumberedBadge(row.mark,
-                in: CGRect(x: padding, y: top - layout.badgeHeight, width: width, height: layout.badgeHeight), context: context)
+                in: CGRect(x: padding, y: top - layout.badgeHeight, width: width, height: layout.badgeHeight),
+                context: context, colour: colour)
             context.textMatrix = .identity
             for (index, line) in row.lines.enumerated() {
                 context.textPosition = CGPoint(x: padding + width + 12, y: top - 17 - CGFloat(index) * lineHeight)

@@ -11,14 +11,14 @@ struct SettingsAccessLine: Equatable {
 
     static func lines(screenRecording: Bool, microphone: SettingsMicrophoneAccess) -> [Self] {
         if screenRecording && microphone == .on {
-            return [Self(text: "✓ Screen Recording and Microphone are on.", action: nil)]
+            return [Self(text: "Screen Recording and Microphone are on.", action: nil)]
         }
         var lines: [Self] = []
         if !screenRecording {
-            lines.append(Self(text: "Screen Recording is off. Pilcrow needs it to see your screen.", action: .screen))
+            lines.append(Self(text: "Pilcrow can’t capture without it.", action: .screen))
         }
         if microphone != .on {
-            lines.append(Self(text: "Microphone is off. Marks still work; Pilcrow can't hear you.", action: .microphone))
+            lines.append(Self(text: "Microphone is off. Marks work, voice won’t.", action: .microphone))
         }
         return lines
     }
@@ -59,7 +59,7 @@ final class SettingsPresentation: ObservableObject {
     @Published var canClear = false
     @Published var copied: Set<MCPSetupAgent> = []
     @Published var copyError = ""
-    var icon: NSImage = NSApp.applicationIconImage
+    @Published var colour: PilcrowColour = .coral
     var record: (HotKeys.Shortcut) -> Void = { _ in }
     var reset: (HotKeys.Shortcut) -> Void = { _ in }
     var defaultLabel: (HotKeys.Shortcut) -> String = { $0.defaultChord.glyph }
@@ -69,26 +69,71 @@ final class SettingsPresentation: ObservableObject {
     var reopen: () -> Void = {}
     var showCaptures: () -> Void = {}
     var clearCaptures: () -> Void = {}
+    var colourChanged: (PilcrowColour) -> Void = { _ in }
+
+    func selectColour(_ choice: PilcrowColour) {
+        guard colour != choice else { return }
+        colour = choice
+        colourChanged(choice)
+    }
 }
 
 struct SettingsStoryView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @FocusState private var focusedShortcut: HotKeys.Shortcut?
     @ObservedObject var model: SettingsPresentation
-    private let markRed = Color(red: 227 / 255, green: 20 / 255, blue: 31 / 255)
+    private var dark: Bool { colorScheme == .dark }
+    private var accent: Color { Color(cgColor: model.colour.accent(dark: dark)) }
+    private var opaqueSurface: Color { dark ? Color(white: 0.16) : Color(white: 0.98) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 14) {
-                Image(nsImage: model.icon).resizable().frame(width: 46, height: 46)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Pilcrow").font(.system(size: 21, weight: .semibold))
-                    Text("Point at it. Say it. Paste it.").font(.system(size: 13)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            header.padding(.horizontal, 8).padding(.bottom, 3)
+            GlassEffectContainer(spacing: 6) {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let screen = model.access.first(where: { $0.action == .screen }) {
+                        screenCard(screen.text)
+                    }
+                    if let microphone = model.access.first(where: { $0.action == .microphone }) {
+                        microphonePill(microphone.text)
+                    }
+                    glassGroup { steps }
+                    glassGroup { agentCard }
+                    glassGroup { colourPicker }
                 }
             }
-            .padding(.horizontal, 30).padding(.top, 24)
+            footer.padding(.horizontal, 12)
+        }
+        .padding(.horizontal, 16).padding(.top, 38).padding(.bottom, 18)
+        .frame(width: 440, alignment: .leading)
+        .background {
+            Color(nsColor: .windowBackgroundColor)
+            LinearGradient(stops: [
+                .init(color: accent.opacity(dark ? 0.26 : 0.30), location: 0),
+                .init(color: accent.opacity(dark ? 0.08 : 0.12), location: 0.28),
+                .init(color: .clear, location: 0.63),
+                .init(color: accent.opacity(0.07), location: 1)
+            ], startPoint: .topLeading, endPoint: .bottom)
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 15) {
+    private var header: some View {
+        HStack(spacing: 12) {
+            glyph(size: 36).frame(width: 54, height: 54)
+                .background(LinearGradient(colors: [.white, Color(white: 0.93)],
+                    startPoint: .top, endPoint: .bottom), in: RoundedRectangle(cornerRadius: 13))
+                .shadow(color: .black.opacity(dark ? 0.24 : 0.12), radius: 5, y: 2)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Pilcrow").font(.system(size: 21, weight: .semibold))
+                Text("Point at it. Say it. Paste it.").font(.system(size: 13)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var steps: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
                 step(1) {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
                         Text("Press")
@@ -109,34 +154,26 @@ struct SettingsStoryView: View {
                 if model.rejection?.shortcut == .undo { rejectionBubble(.undo) }
                 step(3) { Text("Press **esc**, then **⌘V** into your agent.") }
             }
-            .font(.system(size: 15)).padding(.horizontal, 30).padding(.top, 26)
+            .font(.system(size: 15)).padding(16)
 
             if model.rejection == nil {
+                Rectangle().fill(.primary.opacity(0.10)).frame(height: 0.5)
                 Text(model.recording != nil ? (model.recorderNote.isEmpty ? "Esc cancels · Delete resets · Press fn with the F-key" : model.recorderNote) :
                         (model.recorderNote.isEmpty ? "Click a key to change it." : model.recorderNote))
-                    .font(.system(size: 11.5)).foregroundStyle(.tertiary)
+                    .font(.system(size: 11.5)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 65).padding(.trailing, 30).padding(.top, 14)
+                    .padding(.leading, 51).padding(.trailing, 16).padding(.vertical, 10)
             }
-
-            agentCard.padding(.horizontal, 20).padding(.top, 26)
-            footer.padding(.horizontal, 30).padding(.top, 18).padding(.bottom, 24)
         }
-        .frame(width: 440, alignment: .leading)
-        .background {
-            Color(nsColor: .windowBackgroundColor)
-            if colorScheme == .light { Color.primary.opacity(0.03) }
-        }
-    }
-
-    private var cardSurface: Color {
-        colorScheme == .dark ? Color.primary.opacity(0.055) : Color(nsColor: .textBackgroundColor)
     }
 
     private func step<Content: View>(_ number: Int, @ViewBuilder content: () -> Content) -> some View {
-        HStack(alignment: .top, spacing: 13) {
+        let blocked = model.access.contains { $0.action == .screen }
+        return HStack(alignment: .top, spacing: 13) {
             Text(String(number)).font(.system(size: 12, weight: .bold, design: .rounded))
-                .foregroundStyle(.white).frame(width: 22, height: 22).background(markRed, in: Circle())
+                .foregroundStyle(blocked ? Color.white : Color(cgColor: model.colour.badgeText))
+                .frame(width: 22, height: 22)
+                .background(blocked ? Color(nsColor: .systemGray) : accent, in: Circle())
                 .padding(.top, 2).accessibilityLabel("Step \(number)")
             content().frame(minHeight: 26, alignment: .leading)
         }
@@ -145,21 +182,23 @@ struct SettingsStoryView: View {
     private func keycap(_ shortcut: HotKeys.Shortcut, small: Bool = false) -> some View {
         let rejected = model.rejection?.shortcut == shortcut
         let recording = model.recording == shortcut
+        let focused = recording || focusedShortcut == shortcut
         let glyph = rejected ? model.rejection!.glyph : (recording ? "Press a shortcut…" : (shortcut == .annotate ? model.start : model.undo))
+        let shape = RoundedRectangle(cornerRadius: small ? 6 : 7)
         return Button { model.record(shortcut) } label: {
             Text(glyph).font(.system(size: small ? 12.5 : 14, weight: .medium))
-                .foregroundStyle(rejected ? markRed : Color.primary)
+                .foregroundStyle(rejected ? Color.red : Color.primary)
                 .padding(.horizontal, 8).frame(minWidth: small ? 36 : 40, minHeight: small ? 22 : 26)
-                .background(LinearGradient(colors: colorScheme == .dark
-                    ? [Color.primary.opacity(0.14), Color.primary.opacity(0.09)]
-                    : [Color(nsColor: .textBackgroundColor), Color.primary.opacity(0.035)],
-                    startPoint: .top, endPoint: .bottom), in: RoundedRectangle(cornerRadius: small ? 6 : 7))
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: small ? 6 : 7))
-                .overlay(RoundedRectangle(cornerRadius: small ? 6 : 7)
-                    .strokeBorder(rejected ? markRed : Color.primary.opacity(0.15), lineWidth: rejected ? 1.5 : 0.5))
-                .shadow(color: rejected ? markRed.opacity(0.18) : .black.opacity(0.10), radius: rejected ? 3 : 0, y: 1)
+                .background(LinearGradient(colors: dark ? [Color(white: 0.26), Color(white: 0.19)]
+                    : [.white, Color(white: 0.94)], startPoint: .top, endPoint: .bottom), in: shape)
+                .overlay(shape.strokeBorder(rejected ? .red : (focused ? accent : .primary.opacity(0.15)),
+                                            lineWidth: rejected || focused ? 1.5 : 0.5))
+                .shadow(color: rejected ? .red.opacity(0.18) : (focused ? accent.opacity(0.4) : .black.opacity(0.10)),
+                        radius: rejected || focused ? 3 : 0, y: 1)
         }
         .buttonStyle(.plain).fixedSize()
+        .focused($focusedShortcut, equals: shortcut)
+        .focusEffectDisabled()
         .accessibilityLabel(shortcut == .annotate ? "Start / finish shortcut" : "Undo mark shortcut")
         .accessibilityValue(glyph)
         .help("Click to record. Esc cancels; Delete resets the default. Press fn with the F-key.")
@@ -167,7 +206,7 @@ struct SettingsStoryView: View {
 
     private func rejectionBubble(_ shortcut: HotKeys.Shortcut) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(markRed)
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.rejection?.reason ?? "").font(.system(size: 12.5, weight: .semibold))
                 Text(model.recording == nil ? "Click the key to try another shortcut." : "Press another shortcut.")
@@ -177,7 +216,7 @@ struct SettingsStoryView: View {
                 Label("Reset to \(model.defaultLabel(shortcut))", systemImage: "return")
             }.buttonStyle(.bordered).controlSize(.small).fixedSize()
         }
-        .padding(12).background(cardSurface, in: RoundedRectangle(cornerRadius: 12))
+        .padding(12).background(opaqueSurface, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.primary.opacity(0.07), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
         .padding(.leading, 35)
@@ -186,7 +225,7 @@ struct SettingsStoryView: View {
     private var agentCard: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "terminal").font(.system(size: 15)).frame(width: 30, height: 30)
-                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 9))
+                .foregroundStyle(accent).background(accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 0) {
                 Text("Let your agent fetch captures").font(.system(size: 13, weight: .semibold))
                 Text("Paste one command into your terminal, once. After that, ask your agent to look instead of pasting.")
@@ -201,29 +240,121 @@ struct SettingsStoryView: View {
                             .help("Copy the \(agent.rawValue) setup command for this Pilcrow bundle")
                     }
                 }.font(.system(size: 12)).padding(.top, 12).fixedSize()
-                if !model.copyError.isEmpty { Text(model.copyError).font(.system(size: 11.5)).foregroundStyle(markRed).padding(.top, 8) }
+                if !model.copyError.isEmpty { Text(model.copyError).font(.system(size: 11.5)).foregroundStyle(.red).padding(.top, 8) }
             }
         }
-        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardSurface, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(.primary.opacity(0.07), lineWidth: 0.5))
+        .padding(16)
+    }
+
+    private func glyph(size: CGFloat) -> some View {
+        Image(nsImage: StatusIcon.image(.annotating, colour: model.colour, dark: dark))
+            .resizable().frame(width: size, height: size).accessibilityHidden(true)
+    }
+
+    private var colourPicker: some View {
+        HStack(spacing: 12) {
+            glyph(size: 18).frame(width: 30, height: 30)
+                .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Colour · \(model.colour.name)").font(.system(size: 13, weight: .semibold))
+                Text("Menu bar, marks and badges").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            Spacer(minLength: 0)
+            HStack(spacing: 0) {
+                ForEach(PilcrowColour.allCases, id: \.self) { colour in
+                    let selected = model.colour == colour
+                    let swatch = Color(cgColor: colour.accent(dark: dark))
+                    Button { model.selectColour(colour) } label: {
+                        Circle().fill(swatch).frame(width: 16, height: 16)
+                            .frame(width: 22, height: 26)
+                            .overlay {
+                                if selected {
+                                    Circle().strokeBorder(swatch, lineWidth: 1.5).frame(width: 22, height: 22)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(colour.name)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .help(colour.name)
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Pilcrow colour")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+    }
+
+    private func glassGroup<Content: View>(radius: CGFloat = 20, @ViewBuilder content: () -> Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius)
+        return content().frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                if reduceTransparency {
+                    shape.fill(opaqueSurface)
+                } else {
+                    shape.fill(.white.opacity(dark ? 0.05 : 0.40))
+                        .background { Color.clear.glassEffect(.regular, in: shape) }
+                }
+            }
+            .overlay(shape.strokeBorder(.primary.opacity(0.11), lineWidth: 0.5).allowsHitTesting(false))
+    }
+
+    private func screenCard(_ detail: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "rectangle.slash").font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white).frame(width: 32, height: 32)
+                .background(.red, in: RoundedRectangle(cornerRadius: 9))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Screen Recording is off").font(.system(size: 13, weight: .semibold))
+                Text(detail).font(.system(size: 11.5)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            Button(action: model.screenAccess) {
+                HStack(spacing: 5) {
+                    Text("Open Settings")
+                    Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
+                .font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).tint(.red)
+            .disabled(!model.accessEnabled).fixedSize()
+        }
+        .padding(12)
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 16)
+            shape.fill(opaqueSurface)
+                .overlay(shape.fill(.red.opacity(dark ? 0.20 : 0.09)))
+                .overlay(shape.strokeBorder(.red.opacity(0.35), lineWidth: 0.75))
+        }
+    }
+
+    private func microphonePill(_ detail: String) -> some View {
+        glassGroup(radius: 22) {
+            HStack(spacing: 8) {
+                Image(systemName: "mic.slash").foregroundStyle(.orange).accessibilityHidden(true)
+                Text(detail).font(.system(size: 11.5))
+                Spacer(minLength: 4)
+                Button("Turn On…", action: model.microphoneAccess)
+                    .fontWeight(.semibold)
+                    .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.small)
+                    .tint(.primary).background(.orange.opacity(0.14), in: Capsule())
+                    .disabled(!model.microphoneEnabled).fixedSize()
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+        }
     }
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(model.access.enumerated()), id: \.offset) { _, line in
-                if let action = line.action {
-                    let enabled = action == .microphone ? model.microphoneEnabled : model.accessEnabled
-                    let label = action == .screen ? "Open Settings" : "Turn On…"
-                    Text(.init(line.text + " [" + label + "](pilcrow-settings://access)"))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .environment(\.openURL, OpenURLAction { _ in
-                            guard enabled else { return .handled }
-                            if action == .screen { model.screenAccess() } else { model.microphoneAccess() }
-                            return .handled
-                        })
-                        .disabled(!enabled)
-                } else { Text(line.text) }
+            if let access = model.access.first(where: { $0.action == nil }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).accessibilityHidden(true)
+                    Text(access.text)
+                }
             }
             if let message = model.reopenMessage {
                 HStack {
