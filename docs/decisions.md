@@ -1,10 +1,16 @@
 # Decision log
 
-Each entry records what was decided, who decided it, why, and what was turned down. "User" means the maintainer chose explicitly; "Claude" means Claude proposed and the maintainer accepted it by building on it. Entries are append-only: a reversed decision gets a new entry that supersedes it.
+This log records Pilcrow's design decisions and why they were made.
+Entries are append-only, newest last. Keep earlier entries and their numbers,
+and append a superseding entry when a decision changes.
 
-Status values: **Active**, **Proposed** (not yet confirmed), **Superseded by D-xx**, **Open** (needs a decision).
-
-The format and several lessons come from the maintainer's earlier project, Benji.
+Read it as history. Each entry's status was true when it was written, and a later
+entry wins where they disagree. For example, D-22's clipboard-first Finish
+replaced D-20's approval preview. Early entries were written while the app was
+being built with AI coding agents. "User" is the maintainer, "Claude" and other
+model names are the agents, and "Benji" is the maintainer's earlier private
+project that some ideas came from. For current behaviour, see the
+[user guide](using-pilcrow.md) and [Core contract](core.md).
 
 ---
 
@@ -120,7 +126,7 @@ The format and several lessons come from the maintainer's earlier project, Benji
 
 ### D-20 · Delivery v1: approval preview, then clipboard, Codex CLI, Claude Code or MCP
 - **When / who:** 2026-11-21 · User chose all four destinations; Claude set the mechanism (resolves D-12)
-- **Decision:** After Finish, a normal Preview window shows the exact text and the images actually written; nothing leaves until Send. Destinations: Copy to clipboard (text with absolute image paths, plus the image files); Codex CLI and Claude Code run in Terminal in a remembered project folder through a generated `send.command` opened with `open -a Terminal` (no Automation permission); MCP through `pilcrow-mcp` (D-21). "Sent" is shown only after the step really succeeded. Details: [delivery.md](delivery.md).
+- **Decision:** After Finish, a normal Preview window shows the exact text and the images actually written; nothing leaves until Send. Destinations: Copy to clipboard (text with absolute image paths, plus the image files); Codex CLI and Claude Code run in Terminal in a remembered project folder through a generated `send.command` opened with `open -a Terminal` (no Automation permission); MCP through `pilcrow-mcp` (D-21). "Sent" is shown only after the step really succeeded. Details: [Architecture](architecture.md#delivery).
 - **Why:** The approval gate is a core differentiator (D-16). A `.command` file avoids the Apple Events permission that scripting Terminal would need.
 - **Supersedes:** D-12 (Codex CLI only, open).
 - **Status:** Active.
@@ -238,7 +244,7 @@ The format and several lessons come from the maintainer's earlier project, Benji
 - **Decision:** Run on-device accurate Vision OCR with language correction on each live mark's original screenshot region. Areas filter text inside their shape, arrows use the rendered tip, pins use the point, and plain lines follow their ink. Skip empty text and candidates below 0.6 confidence; collapse whitespace and cap at 80 characters with an ellipsis. Put it in the per-mark text only, separate from spoken words and D-31 image captions.
 - **Decision:** Bound the entire background OCR collection to 600 ms, including queue time. Keep only results ready before the deadline; ignore late completion. Use one serial worker across captures so abandoned work cannot spawn concurrent Vision requests. Optional frame `context` and crop `visibleText` fields travel through v1 manifest attachments and existing MCP messages without new tools.
 - **Why:** App/window names and visible labels give a coding agent useful search terms without asking the speaker to describe them. Clipboard-first Finish stays bounded, and existing captures still decode.
-- **Status:** Implemented; automated synthetic Vision, formatting, timeout and compatibility tests cover delivery. Live window selection and Finish-to-HUD timing require the human checks in `docs/live-test-m1.md`.
+- **Status:** Implemented; automated synthetic Vision, formatting, timeout and compatibility tests cover delivery. Live window selection and Finish-to-HUD timing require the human checks in [Manual testing](manual-testing.md).
 
 
 ### Review fixes 2026-11-23

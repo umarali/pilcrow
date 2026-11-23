@@ -1,0 +1,10 @@
+The checkout button [1] wraps on narrow windows, keep it on one line. And this total [2] should line up with the prices above it.
+
+frame-1.png — Safari · "Checkout – Acme Store"
+- [1] (box) "The checkout button wraps on narrow windows, keep it on one line." on "Place order" → mark-1.png (in frame-1.png)
+- [2] (oval) "And this total should line up with the prices above it." on "$42.00" → mark-2.png (in frame-1.png)
+
+Images (read these first):
+~/Library/Application Support/Pilcrow/Outbox/…/frame-1.png
+~/Library/Application Support/Pilcrow/Outbox/…/mark-1.png
+~/Library/Application Support/Pilcrow/Outbox/…/mark-2.png

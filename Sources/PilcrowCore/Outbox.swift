@@ -1,6 +1,6 @@
 import Foundation
 
-/// Where an approved message was sent. See docs/delivery.md and D-20, D-21.
+/// Where a capture was sent. See docs/agents.md and D-21, D-22.
 public enum Destination: String, Sendable, Codable, Equatable, CaseIterable {
     case clipboard
     case codexCLI = "codex-cli"
