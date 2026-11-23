@@ -73,6 +73,7 @@ actor OutboxStore {
             .write(to: messageURL, options: .atomic)
         try writeCommand(destination: destination, project: project, paths: paths,
                          messageURL: messageURL, item: item, shellPath: shellPath)
+        // Attachments retain optional frame provenance and mark OCR on recovery and routing.
         let manifest = OutboxManifest(id: approval.id, createdAt: Date(), destination: destination,
                                       text: approval.text, attachments: approval.attachments)
         try OutboxManifest.encoder().encode(manifest).write(to: item.appendingPathComponent("manifest.json"), options: .atomic)

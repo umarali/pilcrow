@@ -145,3 +145,15 @@ These checks require a human. Automated implementation checks use synthetic offs
 - [ ] Paste into an image-only target such as T3 Code. Confirm the instruction is visible in the images. Paste into a target that accepts text and image files; confirm the full message and file attachments remain available. `message.md` and manifest text retain the complete words; only `message-for-agent.md` adds the caption hint.
 - [ ] Finish with no speech. Frame and crop pixel sizes stay as before. A speech-only capture still has text and no images.
 - [ ] After separately authorized setup, run Claude's user-scope command in one disposable folder and use Pilcrow from another folder. Repeat fetching with Codex, whose MCP configuration is global by default. No Review → MCP click is required. Check latest/list/get before and after Discard and Clear, and after the 24-hour cutoff.
+
+
+## App/window context and visible text (D-35)
+
+These checks require a human with the app's existing Screen Recording permission. Automated checks render synthetic pixels and do not capture a screen.
+
+- [ ] In Safari, draw a box around a readable "Save changes" label and speak an instruction. Finish and paste. The frame header names Safari and the visible window title once, and the mark's line keeps the spoken words plus `on "Save changes"`. No URL, new UI, form or permission prompt appears.
+- [ ] Make separate passes in two apps and on two displays, including a secondary display above or left of the primary. Confirm each frame names the window under its first mark, rather than Pilcrow's overlay or a window on another display. Draw on empty desktop to check fallback to the frontmost normal window on that display, or omitted context if none exists.
+- [ ] Box, oval and freeform an area with nearby text outside the shape. Point an arrow at another label, then pin, underline and strike labels. Check OCR names text inside the areas, near the arrow's rendered tip and pin, or along the line. Repeat with a reversed arrow and a separately drawn head.
+- [ ] Use blank space, faint unreadable text, and more than 80 visible characters. Empty or unreliable text is omitted; long text ends with an ellipsis. Spoken image captions stay unchanged and contain no added OCR text.
+- [ ] Finish a dense capture with many marks. Copy/HUD still completes with bounded OCR; incomplete text is omitted and the message does not change later. Compare the content-free Finish-to-HUD log with an ordinary capture. Live latency remains unmeasured by unit tests.
+- [ ] Inspect `message.md`, clipboard text, `message-for-agent.md` and manifest attachments. Frame attachments carry optional `context`, crops carry optional `visibleText`. After recovery or an explicit secondary send, the fields and sealed words stay intact. Through the existing MCP latest/get tools, check the same frame headers and mark text, without a new tool or Review action.

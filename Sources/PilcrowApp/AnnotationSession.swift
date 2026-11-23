@@ -192,7 +192,7 @@ final class AnnotationSession {
     func begin(on display: CGDirectDisplayID, at point: CGPoint, timestamp: TimeInterval) {
         guard !ended, activeStroke == nil, let geometry = displays[display] else { return }
         let existingID = needsNewPass ? nil : currentFrameIDs[display]
-        let frame: Frame
+        var frame: Frame
         if let existingID {
             guard let registered = core.frames.first(where: { $0.id == existingID }) else {
                 reportCoreError(Session.ValidationError.unknownFrameID, during: "find the current frame")
@@ -205,6 +205,7 @@ final class AnnotationSession {
         guard let firstPoint = normalized(point, in: frame) else { return }
 
         if existingID == nil {
+            frame.context = WindowContext.capture(displayID: display, point: firstPoint)
             do {
                 try core.addFrame(frame)
             } catch {
@@ -426,9 +427,12 @@ final class AnnotationSession {
         let snapshot = core
         let images = originals
         let voiceResults = narration?.voiceResults ?? VoiceRecording.Results()
-        let result = await Task.detached { [colour] in
-            Export.write(session: snapshot, message: message, originals: images, to: folder,
-                         voiceResults: voiceResults, colour: colour)
+        let (result, enriched, visibleText) = await Task.detached { [colour] in
+            let visibleText = MarkTextRecognition.collect(session: snapshot, originals: images)
+            let enriched = MessageBuilder.build(session: snapshot, onlyFinal: false, visibleText: visibleText)
+            let result = Export.write(session: snapshot, message: enriched, originals: images, to: folder,
+                                      voiceResults: voiceResults, colour: colour)
+            return (result, enriched, visibleText)
         }.value
         if !result.failedFiles.isEmpty { notes += " · \(result.failedFiles.count) files failed" }
 
@@ -438,11 +442,9 @@ final class AnnotationSession {
         if count > 0, result.messageWritten { summary += " and message" }
         stateLog.notice("\(summary, privacy: .public)\(notes, privacy: .public)")
         let missingFiles = message.attachments.filter { !result.attachments.contains($0) }
-        let text = DeliveryText.approved(coreText: message.text, failedImages: missingFiles)
-        let cropMarks = Dictionary(uniqueKeysWithValues: snapshot.liveMarks.map { ("mark-\($0.id.rawValue).png", $0.id.rawValue) })
-        let attachments = result.attachments.map { name in
-            OutboxManifest.Attachment(name: name, kind: cropMarks[name] == nil ? .frame : .crop, mark: cropMarks[name])
-        }
+        let text = DeliveryText.approved(coreText: enriched.text, failedImages: missingFiles)
+        let attachments = Export.attachments(session: snapshot, message: enriched,
+                                             names: result.attachments, visibleText: visibleText)
         let list = FixList.build(session: snapshot, onlyFinal: false)
         let marks = list.items.map {
             ApprovalExport.Mark(number: $0.mark.rawValue, words: $0.words, thumbnail: result.thumbnails[$0.cropName])

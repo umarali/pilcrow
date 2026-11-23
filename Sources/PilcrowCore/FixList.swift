@@ -35,6 +35,8 @@ public struct FixItem: Sendable, Equatable, Hashable, Codable {
     public let unavailableReason: UnavailableReason?
     public let words: String
     public let shape: MarkShape?
+    public let visibleText: String?
+    public let frameContext: FrameContext?
 
     /// Human-readable kind shared by fix lines and exported image captions.
     public var kindLabel: String {
@@ -62,7 +64,7 @@ public struct FixList: Sendable, Equatable, Codable {
     public let transcript: String
     public let items: [FixItem]
 
-    public static func build(session: Session, onlyFinal: Bool = false) -> FixList {
+    public static func build(session: Session, onlyFinal: Bool = false, visibleText: [MarkID: String] = [:]) -> FixList {
         let words = Aligner.sortedWords(session.words, onlyFinal: onlyFinal)
         let tokens = Aligner.place(sortedWords: words, sortedStrokes: Aligner.sortedLiveStrokes(session.strokes),
                                    toleratesWordStarts: true)
@@ -85,13 +87,15 @@ public struct FixList: Sendable, Equatable, Codable {
             return FixItem(mark: stroke.id, frameID: stroke.frameID,
                            imageName: names[stroke.frameID] ?? "screenshot unavailable", cropName: "mark-\(stroke.id.rawValue).png",
                            cropRect: crop.rect, outputSize: crop.size, unavailableReason: crop.reason,
-                           words: cleanup.text(for: contexts[stroke.id, default: []]), shape: shape)
+                           words: cleanup.text(for: contexts[stroke.id, default: []]), shape: shape,
+                           visibleText: visibleText[stroke.id].flatMap(VisibleText.concise), frameContext: frames[stroke.frameID]?.context)
         }
         return FixList(transcript: TranscriptRenderer.render(tokens: tokens), items: items)
     }
 
     /// No trailing newline. Missing crops keep their planned names and state the reason.
     func renderMarkdown() -> String {
+        var shownFrames = Set<Frame.ID>()
         let list = items.map { item in
             let reason: String
             switch item.unavailableReason {
@@ -101,7 +105,12 @@ public struct FixList: Sendable, Equatable, Codable {
             case nil: reason = ""
             }
             let words = item.words.isEmpty ? "" : " \"\(TextSanitizer.markdownQuoted(item.words))\""
-            return "- [\(item.mark.rawValue)]\(item.kindLabel)\(words) → \(item.cropName) (in \(item.imageName))\(reason)"
+            let target = item.visibleText.map { " on \"\(TextSanitizer.markdownQuoted($0))\"" } ?? ""
+            var header = ""
+            if let label = item.frameContext?.messageLabel, shownFrames.insert(item.frameID).inserted {
+                header = "\(item.imageName) — \(label)\n"
+            }
+            return header + "- [\(item.mark.rawValue)]\(item.kindLabel)\(words)\(target) → \(item.cropName) (in \(item.imageName))\(reason)"
         }.joined(separator: "\n")
         return [TextSanitizer.markdownTranscript(transcript), list].filter { !$0.isEmpty }.joined(separator: "\n\n")
     }

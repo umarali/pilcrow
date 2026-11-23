@@ -181,6 +181,8 @@ The format and several lessons come from the maintainer's earlier project, Benji
 
 **Amendment · 2026-11-21, review re-check.** The tip look-ahead applies only to strokes that already show as arrows (a drawn head or a source link), so a plain line ending near a mark stays a line. Links to undone marks count as free ends, so a redrawn target takes them over. A head whose shaft was undone cannot absorb new ink. Two-barb contact precision, the start-end head rule, consistent undo grouping for multi-part heads and the start-end margin cliff are in the backlog.
 
+**Amendment · 2026-11-23.** Scale box edge deviation with the edge chord, capped by the short side, and keep the drawn loop bounds. A V can set the head at either end. A single barb must touch the pen-up end within 6 pt. Two consecutive barbs can reach 14 pt when they open back on opposite sides, have similar lengths and meet the 3 s gesture windows. V legs use chord deviation to tolerate sample jitter. A stroke with a head or target can look back from its start by up to `min(40, 0.15 × chord)` pt. Undo handles all absorbed heads together and restores the shaft's pre-head shape and direction when they changed. It removes the shaft when the visible result was already the same. A restored shaft's head window also runs for 3 s after undo.
+
 
 ### D-29 · Mark badge icons
 - **When / who:** 2026-11-22 · User chose the mark badge.
@@ -228,3 +230,12 @@ The format and several lessons come from the maintainer's earlier project, Benji
 - **Why:** Checking its own fixes is the agent's job, with its own browser, screenshot and test tools. Keeping Pilcrow to capture keeps it small.
 - **Supersedes:** The roadmap's Wave 3.
 - **Status:** Recorded.
+
+
+### D-35 · App/window provenance and bounded visible text
+- **When / who:** 2026-11-23 · Owner requested cheap context clues for finding the code behind a screenshot, with no new UI or settings.
+- **Decision:** At the first mark on a captured display, record the app name and window title from the normal window under that point, otherwise the frontmost normal window on that display, excluding Pilcrow. Use `CGWindowListCopyWindowInfo`; keep a cheap bundle ID, read no browser URLs and request no new permission. Store optional frame context and repeat it once in the text as a frame header.
+- **Decision:** Run on-device accurate Vision OCR with language correction on each live mark's original screenshot region. Areas filter text inside their shape, arrows use the rendered tip, pins use the point, and plain lines follow their ink. Skip empty text and candidates below 0.6 confidence; collapse whitespace and cap at 80 characters with an ellipsis. Put it in the per-mark text only, separate from spoken words and D-31 image captions.
+- **Decision:** Bound the entire background OCR collection to 600 ms, including queue time. Keep only results ready before the deadline; ignore late completion. Use one serial worker across captures so abandoned work cannot spawn concurrent Vision requests. Optional frame `context` and crop `visibleText` fields travel through v1 manifest attachments and existing MCP messages without new tools.
+- **Why:** App/window names and visible labels give a coding agent useful search terms without asking the speaker to describe them. Clipboard-first Finish stays bounded, and existing captures still decode.
+- **Status:** Implemented; automated synthetic Vision, formatting, timeout and compatibility tests cover delivery. Live window selection and Finish-to-HUD timing require the human checks in `docs/live-test-m1.md`.

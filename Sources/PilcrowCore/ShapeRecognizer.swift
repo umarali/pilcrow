@@ -2,7 +2,7 @@ import Foundation
 
 /// Classifies completed ink without changing its recorded points.
 public enum ShapeRecognizer {
-    public static let version = "d28-forgiving-v2"
+    public static let version = "d28-forgiving-v3"
     private static let arrowMargin = 20.0
     private static let straightnessLimit = 1.2
     private static let minimumShaftLength = 30.0
@@ -238,11 +238,13 @@ public enum ShapeRecognizer {
     }
 
     private static func hasStraightRuns(_ samples: [Point], ink: [Point], corners: [Int], span: Double) -> Bool {
-        let tolerance = 0.16 * span
+        var edges: [(start: Point, end: Point, tolerance: Double)] = []
         for (first, last) in zip(corners, corners.dropFirst() + [corners[0] + samples.count]) {
             let a = samples[first], b = samples[last % samples.count]
             let chord = distance(a, b)
             guard chord >= 0.20 * span else { return false }
+            // Give long box edges room to bow while keeping tolerance bounded by the short side.
+            let tolerance = corners.count >= 4 ? min(0.40 * span, max(0.16 * span, 0.045 * chord)) : 0.16 * span
             var length = 0.0
             for index in (first + 1)...last {
                 let point = samples[index % samples.count]
@@ -251,11 +253,15 @@ public enum ShapeRecognizer {
                 guard distance(point, interpolate(a, b, fraction: fraction)) <= tolerance else { return false }
             }
             if chord < 0.9 * length { return false }
+            edges.append((a, b, tolerance))
         }
-        let vertices = corners.map { samples[$0] }
-        let outline = vertices + [vertices[0]]
         // A cusp shorter than the sampling interval can still be meaningful ink.
-        return ink.allSatisfy { nearestGap(to: $0, on: outline) <= tolerance }
+        return ink.allSatisfy { point in
+            edges.contains { edge in
+                let fraction = projection(of: point, onto: edge.start, to: edge.end)
+                return distance(point, interpolate(edge.start, edge.end, fraction: fraction)) <= edge.tolerance
+            }
+        }
     }
 
     private static func fittedOutline(_ ink: [Point], in box: PointRect,
@@ -340,25 +346,38 @@ public enum ShapeRecognizer {
         return best?.index
     }
 
-    static func absorbHead(_ head: Stroke, into shaft: Stroke, previousPenUp: Double?,
-                           allowOppositeEnd: Bool, frameSize: Size,
+    static func absorbHead(_ head: Stroke, into shaft: Stroke, pairedWith other: Stroke? = nil,
+                           allowSingleBarb: Bool, allowOppositeEnd: Bool, frameSize: Size,
                            existingMarks: [Stroke]) -> (shape: MarkShape, reversed: Bool)? {
         guard shaft.shape == .mark || isArrow(shaft.shape),
-              let penUp = previousPenUp, (0...3).contains(head.downTime - penUp),
               shaft.frameID == head.frameID,
-              let first = head.points.first, let last = head.points.last,
-              first != last, let ink = framePoints(head.points, size: frameSize),
+              let ink = framePoints(head.points, size: frameSize), ink.first != ink.last,
               let path = framePoints(Array(shaft.renderedPoints), size: frameSize),
               let start = path.first, let end = path.last else { return nil }
         let offsets = pathOffsets(path)
-        guard let length = offsets.last, isShaft(from: start, to: end, length: length),
+        guard let length = offsets.last, length.isFinite, isShaft(from: start, to: end, length: length),
               firstSharpBend(in: path, offsets: offsets) == nil else { return nil }
 
         let currentDirection = shaft.shaftReversed == true
         for reversed in [currentDirection, !currentDirection] {
             if reversed != currentDirection && (!allowOppositeEnd || shaft.shaftPointCount != nil) { break }
             let oriented = reversed ? Array(path.reversed()) : path
-            guard isArrowhead(ink, atEndOf: oriented) else { continue }
+            let tip = oriented[oriented.count - 1]
+            let back = oriented.reversed().first { distance($0, tip) >= 30 } ?? oriented[0]
+            let span = distance(back, tip)
+            let bx = (back.x - tip.x) / span, by = (back.y - tip.y) / span
+            if let other {
+                guard other.frameID == head.frameID, let otherInk = framePoints(other.points, size: frameSize),
+                      let first = barb(otherInk, tip: tip, bx: bx, by: by, reach: 14),
+                      let second = barb(ink, tip: tip, bx: bx, by: by, reach: 14),
+                      first.side * second.side < 0,
+                      distance(first.contact, second.contact) <= 14,
+                      max(first.length, second.length) <= 1.7 * min(first.length, second.length)
+                else { continue }
+            } else if !(allowSingleBarb && !reversed && barb(ink, tip: tip, bx: bx, by: by, reach: 6) != nil),
+                      !isVHead(ink, tip: tip, bx: bx, by: by) {
+                continue
+            }
             if reversed == currentDirection, let shape = shaft.shape, isArrow(shape) {
                 return (shape, reversed)
             }
@@ -374,43 +393,56 @@ public enum ShapeRecognizer {
         return false
     }
 
-    private static func isArrowhead(_ ink: [Point], atEndOf path: [Point]) -> Bool {
-        let first = ink[0], last = ink[ink.count - 1], tip = path[path.count - 1]
+    private static func barb(_ ink: [Point], tip: Point, bx: Double, by: Double, reach: Double)
+        -> (contact: Point, length: Double, side: Double)? {
+        guard let first = ink.first, let last = ink.last else { return nil }
+        let chord = distance(first, last)
+        guard (12...55).contains(chord), let length = pathOffsets(ink).last, chord >= 0.9 * length else { return nil }
+        let firstTouches = distance(first, tip) <= distance(last, tip)
+        let contact = firstTouches ? first : last
+        let outer = firstTouches ? last : first
+        let dx = outer.x - contact.x, dy = outer.y - contact.y
+        let opening = (dx * bx + dy * by) / chord
+        guard distance(contact, tip) <= reach, (0.42...0.97).contains(opening) else { return nil }
+        let side = bx * (outer.y - tip.y) - by * (outer.x - tip.x)
+        let splay = bx * dy - by * dx
+        return (contact, chord, side * splay > 0 ? side : 0)
+    }
+
+    private static func isVHead(_ ink: [Point], tip: Point, bx: Double, by: Double) -> Bool {
+        guard ink.count >= 3 else { return false }
+        let first = ink[0], last = ink[ink.count - 1]
         let box = bounds(of: ink, first: first)
         guard max(box.size.width, box.size.height) <= 110,
               nearestGap(to: tip, on: ink) <= 24 else { return false }
-        let back = path.reversed().first { distance($0, tip) >= 30 } ?? path[0]
-        let span = distance(back, tip)
-        guard span > 0 else { return false }
-        let bx = (back.x - tip.x) / span, by = (back.y - tip.y) / span
-        let offsets = pathOffsets(ink)
-        guard let length = offsets.last, length >= 12, length.isFinite else { return false }
 
-        // A single barb needs a tighter location gate than a two-legged head.
-        let chord = distance(first, last)
-        if (12...55).contains(chord), chord >= 0.9 * length {
-            let firstTouches = distance(first, tip) <= distance(last, tip)
-            let contact = firstTouches ? first : last
-            let outer = firstTouches ? last : first
-            let opening = ((outer.x - contact.x) * bx + (outer.y - contact.y) * by) / chord
-            return distance(contact, tip) <= 6 && (0.42...0.97).contains(opening)
-        }
-        guard ink.count >= 3 else { return false }
         for i in 1..<(ink.count - 1) {
             let apex = ink[i]
-            let firstLeg = offsets[i], secondLeg = length - firstLeg
             let l1 = distance(first, apex), l2 = distance(last, apex)
-            guard min(firstLeg, secondLeg) >= max(6, length * 0.25),
-                  l1 >= 0.9 * firstLeg, l2 >= 0.9 * secondLeg,
-                  max(l1, l2) <= 3 * min(l1, l2),
+            guard min(l1, l2) >= 6, max(l1, l2) <= 3 * min(l1, l2),
                   distance(apex, tip) <= max(24, 1.2 * max(l1, l2)),
                   (55 * .pi / 180...150 * .pi / 180).contains(turn(from: first, through: apex, to: last))
             else { continue }
             let sx = (first.x - apex.x) / l1 + (last.x - apex.x) / l2
             let sy = (first.y - apex.y) / l1 + (last.y - apex.y) / l2
-            if sx * bx + sy * by >= 0.5 * hypot(sx, sy) { return true }
+            if sx * bx + sy * by >= 0.5 * hypot(sx, sy),
+               isStraightLeg(ink[...i], from: first, to: apex, chord: l1),
+               isStraightLeg(ink[i...], from: apex, to: last, chord: l2) { return true }
         }
         return false
+    }
+
+    private static func isStraightLeg(_ ink: ArraySlice<Point>, from start: Point, to end: Point, chord: Double) -> Bool {
+        let tolerance = max(2.5, 0.10 * chord)
+        var furthest = 0.0
+        for point in ink.dropFirst().dropLast() {
+            let fraction = projection(of: point, onto: start, to: end)
+            let along = chord * fraction
+            guard along >= furthest - 2.5,
+                  distance(point, interpolate(start, end, fraction: fraction)) <= tolerance else { return false }
+            furthest = max(furthest, along)
+        }
+        return true
     }
 
     private static func firstSharpBend(in ink: [Point], offsets: [Double]) -> Int? {
@@ -429,7 +461,8 @@ public enum ShapeRecognizer {
     }
 
     private static func arrow(in ink: [Point], offsets: [Double], tipIndex: Int,
-                              near marks: [Stroke], size: Size, hasHead: Bool) -> MarkShape {
+                              near marks: [Stroke], size: Size, hasHead: Bool,
+                              allowStartLookBack: Bool = true) -> MarkShape {
         struct Hit {
             let id: MarkID
             let region: ArrowRegion
@@ -480,36 +513,49 @@ public enum ShapeRecognizer {
         var edge = 0
         let leaving = sample(ink, offsets: offsets, at: 14, edge: &edge)
         let approaching = sample(ink, offsets: offsets, at: offsets[tipIndex] - 14, edge: &edge)
-        let from = directed(startHit, at: start, opposite: tip, probe: leaving)
+        func rayHit(from endpoint: Point, awayFrom back: Point, reach: Double,
+                    opposite: Point, excluding otherID: MarkID?) -> MarkID? {
+            let span = distance(back, endpoint)
+            guard span > 0, reach > 0 else { return nil }
+            let candidates = regions.filter { id, region in
+                id != otherID && region.gap(opposite) > arrowMargin
+            }
+            guard !candidates.isEmpty else { return nil }
+            let dx = (endpoint.x - back.x) / span, dy = (endpoint.y - back.y) / span
+            var step = min(4, reach)
+            while true {
+                let ahead = Point(x: endpoint.x + dx * step, y: endpoint.y + dy * step)
+                if let hit = candidates.first(where: { _, region in
+                    region.gap(ahead) <= region.rayTolerance || region.badgeContains(ahead)
+                }) {
+                    return hit.0
+                }
+                if step == reach { return nil }
+                step = min(step + 4, reach)
+            }
+        }
+
+        var from = directed(startHit, at: start, opposite: tip, probe: leaving)
         var to = directed(tipHit, at: tip, opposite: start, probe: approaching)
-        // Look ahead only for strokes already shown as arrows; a plain line ending near a mark stays a line.
-        if to == nil, tipHit == nil, hasHead || from != nil {
-            let reach = min(90, 0.3 * chord)
+        // Extend only an endpoint of a stroke that already qualifies as an arrow.
+        if tipHit == nil, hasHead || from != nil {
             var backEdge = 0
             let back = sample(ink, offsets: offsets, at: max(0, offsets[tipIndex] - 30), edge: &backEdge)
-            let span = distance(back, tip)
-            let candidates = regions.filter { id, region in
-                id != startHit?.id && region.gap(start) > arrowMargin
-            }
-            if span > 0, reach > 0, !candidates.isEmpty {
-                let dx = (tip.x - back.x) / span, dy = (tip.y - back.y) / span
-                var step = min(4, reach)
-                while to == nil {
-                    let ahead = Point(x: tip.x + dx * step, y: tip.y + dy * step)
-                    to = candidates.first { _, region in
-                        region.gap(ahead) <= region.rayTolerance || region.badgeContains(ahead)
-                    }?.0
-                    if step == reach { break }
-                    step = min(step + 4, reach)
-                }
-            }
+            to = rayHit(from: tip, awayFrom: back, reach: min(90, 0.3 * chord),
+                        opposite: start, excluding: startHit?.id)
+        }
+        if allowStartLookBack, startHit == nil, hasHead || to != nil {
+            var forwardEdge = 0
+            let forward = sample(ink, offsets: offsets, at: min(30, offsets[tipIndex]), edge: &forwardEdge)
+            from = rayHit(from: start, awayFrom: forward, reach: min(40, 0.15 * chord),
+                          opposite: tip, excluding: to ?? tipHit?.id)
         }
         guard hasHead || from != nil || to != nil else { return .mark }
         return .arrow(from: from, to: to)
     }
 
     /// Fills free endpoints using a newly completed target on the same frame.
-    static func relink(_ shaft: Stroke, to target: Stroke, frameSize: Size) -> MarkShape? {
+    static func relink(_ shaft: Stroke, to target: Stroke, frameSize: Size, hasSeparateHead: Bool) -> MarkShape? {
         guard !shaft.isDeleted, shaft.absorbedInto == nil, shaft.upTime != nil,
               case .arrow(let from, let to) = shaft.shape, from == nil || to == nil,
               from != target.id, to != target.id, shaft.frameID == target.frameID,
@@ -517,7 +563,9 @@ public enum ShapeRecognizer {
         let ink = shaft.shaftReversed == true ? Array(path.reversed()) : path
         guard case .arrow(let newFrom, let newTo) = arrow(in: ink, offsets: pathOffsets(ink),
                                                          tipIndex: ink.count - 1, near: [target],
-                                                         size: frameSize, hasHead: true) else { return nil }
+                                                         size: frameSize, hasHead: true,
+                                                         allowStartLookBack: to != nil || shaft.shaftPointCount != nil || hasSeparateHead)
+        else { return nil }
         return .arrow(from: from ?? newFrom, to: to ?? newTo)
     }
 

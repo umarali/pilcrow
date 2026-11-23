@@ -20,6 +20,12 @@ public struct Session: Sendable, Equatable, Codable {
     private var nextUnallocatedMarkNumber: Int
     // The app draws one stroke at a time. Core can also receive overlapping pen-downs.
     private var releasedMarkNumbers: Set<Int> = []
+    private enum HeadUndoTime: Sendable, Equatable, Codable {
+        case session(Double)
+        case uptime(Double)
+    }
+    private static let headWindow = 0.0...3.0
+    private var headUndoTimes: [Int: HeadUndoTime] = [:]
     /// The next visible number. Only absorption releases a provisional number.
     public var nextMarkNumber: Int { releasedMarkNumbers.min() ?? nextUnallocatedMarkNumber }
 
@@ -147,6 +153,16 @@ public struct Session: Sendable, Equatable, Codable {
         let number = nextMarkNumber
         let id = MarkID(rawValue: number)
         if releasedMarkNumbers.remove(number) == nil { nextUnallocatedMarkNumber += 1 }
+        if !headUndoTimes.isEmpty {
+            let now = ProcessInfo.processInfo.systemUptime
+            // Callers without a session timestamp can still time undo on the
+            // monotonic clock. The next pen-down anchors it to the session clock.
+            headUndoTimes = headUndoTimes.compactMapValues { undo in
+                guard case .uptime(let uptime) = undo else { return undo }
+                let elapsed = now - uptime
+                return Self.headWindow.contains(elapsed) ? .session(time - elapsed) : nil
+            }
+        }
         strokes.append(
             Stroke(
                 id: id,
@@ -182,30 +198,12 @@ public struct Session: Sendable, Equatable, Codable {
         strokes[index].shape = result.shape
         strokes[index].shaftPointCount = result.shaftPointCount
         strokes[index].upTime = time
-        if let previous {
-            let previousStroke = strokes[previous]
-            // An orphaned head (its shaft was undone) must not absorb new ink.
-            let parentIndex: Int? = previousStroke.absorbedInto == nil ? previous
-                : strokes[..<previous].firstIndex { $0.id == previousStroke.absorbedInto && !$0.isDeleted }
-            if let parent = parentIndex, let arrow = ShapeRecognizer.absorbHead(stroke, into: strokes[parent],
-                                                       previousPenUp: previousStroke.upTime,
-                                                       allowOppositeEnd: previousStroke.absorbedInto == nil,
-                                                       frameSize: frame.boundsInPoints, existingMarks: existing) {
-                strokes[index].absorbedInto = strokes[parent].id
-                if strokes[parent].shape != arrow.shape || (strokes[parent].shaftReversed == true) != arrow.reversed {
-                    strokes[index].shapeBeforeAbsorption = strokes[parent].shape
-                    strokes[index].shaftReversedBeforeAbsorption = strokes[parent].shaftReversed
-                    strokes[parent].shape = arrow.shape
-                    strokes[parent].shaftReversed = arrow.reversed ? true : nil
-                }
-                hideAbsorbedStroke(at: index)
-                return
-            }
-        }
+        if let previous, absorbHead(at: index, after: previous, frame: frame, existing: existing) { return }
 
         switch result.shape {
         case .pin, .area:
             let target = strokes[index]
+            let headed = Set(existing.lazy.filter { !$0.isDeleted }.compactMap(\.absorbedInto))
             for earlier in strokes.indices.prefix(index) where !strokes[earlier].isDeleted && strokes[earlier].absorbedInto == nil {
                 // Links to undone marks count as free ends, so a redrawn target can take them over.
                 var shaft = strokes[earlier]
@@ -215,13 +213,67 @@ public struct Session: Sendable, Equatable, Codable {
                     }
                     shaft.shape = .arrow(from: live(from), to: live(to))
                 }
-                if let linked = ShapeRecognizer.relink(shaft, to: target, frameSize: frame.boundsInPoints) {
+                if let linked = ShapeRecognizer.relink(shaft, to: target, frameSize: frame.boundsInPoints,
+                                                       hasSeparateHead: headed.contains(shaft.id)) {
                     strokes[earlier].shape = linked
                 }
             }
         case .arrow, .mark:
             break
         }
+    }
+
+    private mutating func absorbHead(at index: Int, after previous: Int, frame: Frame, existing: [Stroke]) -> Bool {
+        func follows(_ successor: Int, _ predecessor: Int) -> Bool {
+            let start = strokes[successor].downTime
+            let prior = strokes[predecessor]
+            if let penUp = prior.upTime, Self.headWindow.contains(start - penUp) { return true }
+            if case .session(let undoTime) = headUndoTimes[prior.id.rawValue] {
+                return Self.headWindow.contains(start - undoTime)
+            }
+            return false
+        }
+        guard follows(index, previous) else { return false }
+        if let shaft = strokes[previous].absorbedInto {
+            // An orphaned head (its shaft was undone) must not absorb new ink.
+            guard let parent = strokes[..<previous].firstIndex(where: { $0.id == shaft && !$0.isDeleted })
+            else { return false }
+            return attachHead(at: index, to: parent, pairedWith: previous, continuingHead: true,
+                              frame: frame, existing: existing)
+                || attachHead(at: index, to: parent, continuingHead: true, frame: frame, existing: existing)
+        }
+        if let parent = strokes[..<previous].lastIndex(where: { !$0.isDeleted }),
+           strokes[parent].absorbedInto == nil, follows(previous, parent),
+           attachHead(at: index, to: parent, pairedWith: previous, frame: frame, existing: existing) {
+            return true
+        }
+        return attachHead(at: index, to: previous, frame: frame, existing: existing)
+    }
+
+    private mutating func attachHead(at index: Int, to parent: Int, pairedWith other: Int? = nil,
+                                     continuingHead: Bool = false, frame: Frame, existing: [Stroke]) -> Bool {
+        let shaft = strokes[parent]
+        guard let arrow = ShapeRecognizer.absorbHead(strokes[index], into: shaft,
+                                                     pairedWith: other.map { strokes[$0] },
+                                                     allowSingleBarb: !continuingHead,
+                                                     allowOppositeEnd: !continuingHead,
+                                                     frameSize: frame.boundsInPoints, existingMarks: existing)
+        else { return false }
+        let first = continuingHead ? index : other ?? index
+        if shaft.shape != arrow.shape || (shaft.shaftReversed == true) != arrow.reversed {
+            strokes[first].shapeBeforeAbsorption = shaft.shape
+            strokes[first].shaftReversedBeforeAbsorption = shaft.shaftReversed
+            strokes[parent].shape = arrow.shape
+            strokes[parent].shaftReversed = arrow.reversed ? true : nil
+        }
+        if let other, !continuingHead {
+            strokes[other].absorbedInto = shaft.id
+            hideAbsorbedStroke(at: other)
+        }
+        strokes[index].absorbedInto = shaft.id
+        hideAbsorbedStroke(at: index)
+        headUndoTimes.removeValue(forKey: shaft.id.rawValue)
+        return true
     }
 
     private mutating func hideAbsorbedStroke(at index: Int) {
@@ -244,6 +296,16 @@ public struct Session: Sendable, Equatable, Codable {
 
     /// Reverts the most recent drawing gesture in this pass.
     public mutating func undoLatestMark(in frameIDs: Set<Frame.ID>) {
+        undoLatestMark(in: frameIDs, time: .uptime(ProcessInfo.processInfo.systemUptime))
+    }
+
+    /// Reverts a gesture at an explicit time on the session clock.
+    public mutating func undoLatestMark(in frameIDs: Set<Frame.ID>, at time: Double) {
+        guard time.isFinite else { return }
+        undoLatestMark(in: frameIDs, time: .session(time))
+    }
+
+    private mutating func undoLatestMark(in frameIDs: Set<Frame.ID>, time: HeadUndoTime) {
         guard !isSealed else { return }
         let liveIDs = Set(liveMarks.map(\.id))
         guard let index = strokes.lastIndex(where: { stroke in
@@ -251,16 +313,22 @@ public struct Session: Sendable, Equatable, Codable {
             return stroke.absorbedInto.map(liveIDs.contains) ?? true
         }) else { return }
         let stroke = strokes[index]
-        if let shaft = stroke.absorbedInto, let parent = strokes.firstIndex(where: { $0.id == shaft }) {
-            if let priorShape = stroke.shapeBeforeAbsorption,
-               strokes[parent].shape != priorShape || strokes[parent].shaftReversed != stroke.shaftReversedBeforeAbsorption {
-                strokes[parent].shape = priorShape
-                strokes[parent].shaftReversed = stroke.shaftReversedBeforeAbsorption
-            } else {
-                deleteMark(id: shaft)
-            }
+        guard let shaft = stroke.absorbedInto, let parent = strokes.firstIndex(where: { $0.id == shaft }) else {
+            deleteMark(id: stroke.id)
+            return
         }
-        deleteMark(id: stroke.id)
+        let group = strokes.indices.filter { !strokes[$0].isDeleted && strokes[$0].absorbedInto == shaft }
+        if let firstChange = group.first(where: { strokes[$0].shapeBeforeAbsorption != nil }),
+           let priorShape = strokes[firstChange].shapeBeforeAbsorption,
+           strokes[parent].shape != priorShape ||
+                (strokes[parent].shaftReversed == true) != (strokes[firstChange].shaftReversedBeforeAbsorption == true) {
+            strokes[parent].shape = priorShape
+            strokes[parent].shaftReversed = strokes[firstChange].shaftReversedBeforeAbsorption
+            headUndoTimes[shaft.rawValue] = time
+        } else {
+            deleteMark(id: shaft)
+        }
+        for head in group { strokes[head].isDeleted = true }
     }
 
     /// Hides a mark from the transcript and from image lists. The id stays reserved.
@@ -268,6 +336,7 @@ public struct Session: Sendable, Equatable, Codable {
         guard !isSealed else { return }
         guard let index = strokes.firstIndex(where: { $0.id == id }) else { return }
         strokes[index].isDeleted = true
+        headUndoTimes.removeValue(forKey: id.rawValue)
     }
 
     /// Finalizes capture outcomes and freezes frame, stroke and transcript mutations. Idempotent.
@@ -287,6 +356,7 @@ public struct Session: Sendable, Equatable, Codable {
         case transcriptLanguageCode
         case nextMarkNumber
         case releasedMarkNumbers
+        case headUndoTimes
         case isSealed
     }
 
@@ -301,6 +371,9 @@ public struct Session: Sendable, Equatable, Codable {
         try container.encode(nextUnallocatedMarkNumber, forKey: .nextMarkNumber)
         if !releasedMarkNumbers.isEmpty {
             try container.encode(releasedMarkNumbers.sorted(), forKey: .releasedMarkNumbers)
+        }
+        if !headUndoTimes.isEmpty {
+            try container.encode(headUndoTimes, forKey: .headUndoTimes)
         }
     }
 
@@ -319,6 +392,7 @@ public struct Session: Sendable, Equatable, Codable {
             let used = Set(decodedStrokes.map { $0.id.rawValue })
             releasedMarkNumbers = Set(released.filter { $0 > 0 && $0 < nextUnallocatedMarkNumber && !used.contains($0) })
         }
+        headUndoTimes = try container.decodeIfPresent([Int: HeadUndoTime].self, forKey: .headUndoTimes) ?? [:]
         if try container.decodeIfPresent(Bool.self, forKey: .isSealed) ?? false { seal() }
     }
 }

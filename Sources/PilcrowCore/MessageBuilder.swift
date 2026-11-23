@@ -94,10 +94,11 @@ public enum MessageBuilder {
     public static func build(
         session: Session,
         destinationHint: String? = nil,
-        onlyFinal: Bool = false
+        onlyFinal: Bool = false,
+        visibleText: [MarkID: String] = [:]
     ) -> OutgoingMessage {
         let names = filenames(for: session)
-        let list = FixList.build(session: session, onlyFinal: onlyFinal)
+        let list = FixList.build(session: session, onlyFinal: onlyFinal, visibleText: visibleText)
         let frames = session.framesWithMarks
         let cropPlans = list.items.compactMap { item -> CropPlan? in
             guard let rect = item.cropRect, let output = item.outputSize else { return nil }

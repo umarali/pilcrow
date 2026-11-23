@@ -19,11 +19,15 @@ public struct OutboxManifest: Sendable, Codable, Equatable {
         public var kind: Kind
         /// The mark number for a crop; nil for a whole frame.
         public var mark: Int?
+        public var context: FrameContext?
+        public var visibleText: String?
 
-        public init(name: String, kind: Kind, mark: Int? = nil) {
+        public init(name: String, kind: Kind, mark: Int? = nil, context: FrameContext? = nil, visibleText: String? = nil) {
             self.name = name
             self.kind = kind
             self.mark = mark
+            self.context = context
+            self.visibleText = visibleText.flatMap(VisibleText.concise)
         }
     }
 

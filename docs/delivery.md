@@ -20,13 +20,23 @@ The HUD fades in/out over 180 ms, or immediately with Reduce Motion. It hides af
 
 Export, outbox writes, routing, deletion and pruning run off the main actor. Thumbnail `CGImage`s pass directly from export to HUD and Review, with no thumbnail PNG encoding or decoding. Retention runs after HUD presentation. A content-free notice logs `Finish-to-HUD` in milliseconds, measured from the initial Finish press, including voice drain, capture wait, export, publication, copy and HUD presentation. It excludes completion of the fade. No live latency has been measured in the build/test-only implementation run.
 
+## Capture context (D-35)
+
+Each captured frame remembers the normal window under its first mark, falling back to the frontmost normal window on that display. Pilcrow excludes its own windows and reads the app name and window title through `CGWindowListCopyWindowInfo`. The bundle ID is retained when available. A single frame header, such as `frame-1.png — Safari · "Pilcrow – Settings"`, precedes that frame's first mark. Missing context adds nothing.
+
+After capture and speech settle, a background serial worker runs accurate Vision text recognition with language correction on the original pixels under each live mark. Boxes, ovals and freeform areas select text inside their shape. Arrows use a 56 pt neighborhood at the rendered tip, pins use the point, and plain lines select text along their ink with a 14 pt margin. Empty results and candidates below 0.6 confidence are omitted. Text collapses whitespace and ends at 80 characters including an ellipsis. A fix line can read `- [3] (box) on "Save changes" → mark-3.png (in frame-1.png)`; spoken words still precede the `on` phrase.
+
+One 600 ms budget covers OCR for every mark and frame, including worker queue time. Finish takes ready results and omits unfinished work. A late result cannot mutate the sealed message. A running Vision request may finish in the background, but no further mark starts after that capture's deadline. Window context and OCR are optional fields on manifest attachments, frame `context` and crop `visibleText`, so older v1 manifests remain readable. Clipboard text, `message.md`, `message-for-agent.md` and MCP use the same enriched fix list; OCR adds no image captions or MCP tools.
+
+Privacy: window titles and visible-text recognition stay on-device and accompany the existing screenshot delivery; Pilcrow reads no browser URLs and requests no additional permission.
+
 ## Image captions (D-31)
 
 `mark-N.png` adds a white caption strip only when that mark has words. `frame-N.png` adds a white panel only when a mark on that frame has words, with one row per spoken mark in mark order. Captions use the same cleaned words and kind labels as the fix list, the same red numbered badge renderer as the overlay, 16 px Helvetica body text in #1d1d1f, grey kind labels and a thin top divider. Review thumbnails include the resulting captions.
 
 The final PNG, including captions, stays within 1,600 px on either edge and 1,560,000 pixels. Screenshot pixels shrink as needed; text stays at its native size and badges stay at least 24 px tall. The original source crop rectangle stays unchanged. Crop strips show at most eight text lines; frame panels use at most 40% of final height. Truncated words end with an ellipsis and grey “(full words in the message)”. The text message retains the complete words. Wordless exports follow the existing rendering path and keep their dimensions.
 
-`message.md`, clipboard text and manifest text retain their previous form. When images exist, only `message-for-agent.md` adds “The images also contain each mark's words under its badge.” The clipboard still carries the text item and image file-URL items.
+`message.md`, clipboard text and manifest text share the enriched D-35 fix list. When images exist, only `message-for-agent.md` adds “The images also contain each mark's words under its badge.” The clipboard still carries the text item and image file-URL items.
 
 ## Shortcuts during annotation
 

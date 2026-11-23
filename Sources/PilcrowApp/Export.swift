@@ -261,6 +261,20 @@ enum Export {
                       messageWritten: written.contains(messageName), failedFiles: failures)
     }
 
+    /// Optional context follows only successful image attachments into the v1 manifest.
+    static func attachments(session: Session, message: OutgoingMessage, names: [String],
+                            visibleText: [MarkID: String]) -> [OutboxManifest.Attachment] {
+        let crops = Dictionary(uniqueKeysWithValues: session.liveMarks.map { ("mark-\($0.id.rawValue).png", $0.id) })
+        let contexts = Dictionary(uniqueKeysWithValues: session.frames.map { ($0.id, $0.context) })
+        let frames = Dictionary(uniqueKeysWithValues: message.framePlans.map { ($0.outputName, $0.frameID) })
+        return names.map { name in
+            if let mark = crops[name] {
+                return OutboxManifest.Attachment(name: name, kind: .crop, mark: mark.rawValue, visibleText: visibleText[mark])
+            }
+            return OutboxManifest.Attachment(name: name, kind: .frame, context: frames[name].flatMap { contexts[$0] ?? nil })
+        }
+    }
+
     /// Local calibration evidence only. Attachment lists and clipboard messages
     /// are built separately from PNG plans and never include this data.
     static func strokeData(session: Session) throws -> Data {

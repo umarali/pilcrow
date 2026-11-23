@@ -76,9 +76,12 @@ public struct Frame: Identifiable, Sendable, Equatable, Hashable, Codable {
     public var boundsInPoints: Size
     public var pixelSize: Size?
     public var captureFailed: Bool
+    /// App/window under the first mark, captured without Accessibility.
+    public var context: FrameContext?
 
     /// Register this before pen-down; complete it after asynchronous capture succeeds.
-    public init(id: ID, displayID: UInt32, boundsInPoints: Size) {
+    public init(id: ID, displayID: UInt32, boundsInPoints: Size, context: FrameContext? = nil) {
+        self.context = context
         self.id = id
         self.displayID = displayID
         self.boundsInPoints = boundsInPoints
@@ -98,8 +101,10 @@ public struct Frame: Identifiable, Sendable, Equatable, Hashable, Codable {
         capturedAt: Double,
         displayID: UInt32,
         boundsInPoints: Size,
-        pixelSize: Size
+        pixelSize: Size,
+        context: FrameContext? = nil
     ) {
+        self.context = context
         self.id = id
         self.capturedAt = capturedAt
         self.displayID = displayID
@@ -109,7 +114,7 @@ public struct Frame: Identifiable, Sendable, Equatable, Hashable, Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, capturedAt, displayID, boundsInPoints, pixelSize, captureFailed
+        case id, capturedAt, displayID, boundsInPoints, pixelSize, captureFailed, context
     }
 
     public init(from decoder: Decoder) throws {
@@ -119,6 +124,7 @@ public struct Frame: Identifiable, Sendable, Equatable, Hashable, Codable {
         displayID = try container.decode(UInt32.self, forKey: .displayID)
         boundsInPoints = try container.decode(Size.self, forKey: .boundsInPoints)
         pixelSize = try container.decodeIfPresent(Size.self, forKey: .pixelSize)
+        context = try container.decodeIfPresent(FrameContext.self, forKey: .context)
         captureFailed = try container.decodeIfPresent(Bool.self, forKey: .captureFailed) ?? false
     }
 }

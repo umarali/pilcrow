@@ -739,6 +739,233 @@ final class ShapeRecognizerTests: XCTestCase {
         }
     }
 
+    private func draw(_ ink: [XY], in session: inout Session, frame: Frame, at time: Double) throws -> MarkID {
+        let points = ink.map { NormalizedPoint(x: $0.x / frame.boundsInPoints.width, y: $0.y / frame.boundsInPoints.height) }
+        let id = try session.beginStroke(at: time, frame: frame.id, firstPoint: points[0])
+        for sample in points.dropFirst() { session.append(point: sample, to: id) }
+        session.endStroke(id: id, at: time + 0.5)
+        return id
+    }
+
+    private func shaftSession() throws -> (Session, Frame, MarkID) {
+        var session = Session()
+        let frame = Frame(id: Frame.ID(), displayID: 1, boundsInPoints: frameSize)
+        try session.addFrame(frame)
+        let shaft = try draw([(400, 300), (550, 300)], in: &session, frame: frame, at: 0)
+        return (session, frame, shaft)
+    }
+
+    func testBowedThinBoxesTidyAtEightToTwelveTimesTheirHeight() {
+        var tidy = 0
+        for seed in 1...64 {
+            let height = 16.0
+            let bow = 1.5 + 4 * Double(seed - 1) / 63
+            let width = (height + 2 * bow) * (8 + 4 * Double(seed - 1) / 63)
+            let vertices: [XY] = [(100, 120), (100 + width, 120), (100 + width, 120 + height),
+                                  (100, 120 + height), (100, 120)]
+            let outline = polyline(vertices, samplesPerEdge: 32).enumerated().map { index, point -> XY in
+                let edge = index / 32
+                let wave = bow * sin(.pi * Double(index % 32) / 32)
+                return (point.x, point.y + (edge == 0 ? -wave : edge == 2 ? wave : 0))
+            }
+            let ink = jitter(outline, seed: UInt64(seed), amplitude: 0.2)
+            guard case .area(.rectangle(let box)) = recognize(ink) else { continue }
+            tidy += 1
+            let xs = ink.map(\.x), ys = ink.map(\.y)
+            XCTAssertEqual(box.size.width, xs.max()! - xs.min()!, accuracy: 0.001)
+            XCTAssertEqual(box.size.height, ys.max()! - ys.min()!, accuracy: 0.001)
+        }
+        XCTAssertEqual(tidy, 64, "Bowed thin boxes tidied: \(tidy)/64")
+    }
+
+    func testThinOvalAndUnderlineDoNotBecomeBoxes() {
+        for ratio in [8.0, 10, 12] {
+            assertEllipse(true, for: oval(rx: 8 * ratio, ry: 8))
+            let underline: [XY] = (0...64).map { step in
+                let t = Double(step) / 64
+                return (100 + 16 * ratio * t, 120 + 5 * sin(.pi * t))
+            }
+            XCTAssertEqual(recognize(underline), .mark)
+        }
+    }
+
+    func testSeparatedBarbPairsFormAHead() throws {
+        let (original, frame, shaft) = try shaftSession()
+        var absorbed = 0
+        for seed in 1...64 {
+            var session = original
+            let gap = 4 + 9 * Double(seed - 1) / 63
+            let first = jitter([(550 - gap, 298), (527 - gap, 284)], seed: UInt64(seed), amplitude: 0.4)
+            let second = jitter([(530 - gap, 315), (550 - gap, 302)], seed: UInt64(seed), amplitude: 0.4)
+            _ = try draw(first, in: &session, frame: frame, at: 1)
+            _ = try draw(second, in: &session, frame: frame, at: 2)
+            if session.liveMarks.map(\.id) == [shaft], session.strokes.suffix(2).allSatisfy({ $0.absorbedInto == shaft }) {
+                absorbed += 1
+            }
+        }
+        XCTAssertEqual(absorbed, 64, "Two-barb heads absorbed: \(absorbed)/64")
+    }
+
+    func testStrayDashesNearTipStaySeparate() throws {
+        let (original, frame, shaft) = try shaftSession()
+        let first: [XY] = [(540, 298), (518, 284)]
+        for (second, at): ([XY], Double) in [
+            ([(540, 296), (517, 282)], 2), // Same side.
+            ([(540, 302), (563, 317)], 2), // Opens forward.
+            ([(540, 302), (530, 310)], 2), // Much shorter.
+            ([(540, 302), (518, 316)], 4.51) // Too late.
+        ] {
+            var session = original
+            let dash = try draw(first, in: &session, frame: frame, at: 1)
+            XCTAssertEqual(session.liveMarks.map(\.id), [shaft, dash])
+            let next = try draw(second, in: &session, frame: frame, at: at)
+            XCTAssertEqual(session.liveMarks.map(\.id), [shaft, dash, next])
+        }
+        var session = original
+        _ = try draw([(550, 300), (528, 287)], in: &session, frame: frame, at: 1)
+        let dash = try draw([(550, 299), (526, 285)], in: &session, frame: frame, at: 2)
+        XCTAssertEqual(session.liveMarks.map(\.id), [shaft, dash])
+    }
+
+    func testSecondStrokeFromSameStartStaysSeparate() throws {
+        let (original, frame, shaft) = try shaftSession()
+        var separate = 0
+        for seed in 1...64 {
+            var session = original
+            let angle = (15 + 55 * Double(seed - 1) / 63) * .pi / 180
+            let leg = jitter([(400, 300), (400 + 24 * cos(angle), 300 - 24 * sin(angle))],
+                             seed: UInt64(seed), amplitude: 0.4)
+            let second = try draw(leg, in: &session, frame: frame, at: 1)
+            if session.liveMarks.map(\.id) == [shaft, second], session.strokes[0].shape == .mark {
+                separate += 1
+            }
+        }
+        XCTAssertEqual(separate, 64, "Second strokes kept separate: \(separate)/64")
+    }
+
+    func testFollowUpVAbsorbsWithUpToOnePointOfSampleJitter() throws {
+        let (original, frame, shaft) = try shaftSession()
+        let clean = polyline([(530, 286), (550, 300), (530, 314)], samplesPerEdge: 16)
+        for amplitude in [0.5, 1.0] {
+            var absorbed = 0
+            for seed in 1...64 {
+                var session = original
+                _ = try draw(jitter(clean, seed: UInt64(seed), amplitude: amplitude),
+                             in: &session, frame: frame, at: 1)
+                if session.liveMarks.map(\.id) == [shaft] { absorbed += 1 }
+            }
+            XCTAssertEqual(absorbed, 64, "Jittered heads absorbed at ±\(amplitude) pt per axis: \(absorbed)/64")
+        }
+    }
+
+    func testRecordedVAbsorbsWithUpToOnePointOfSampleJitter() throws {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "capture-a", withExtension: "json",
+                                                  subdirectory: "live-round3"))
+        let capture = try JSONDecoder().decode(StrokeRecording.self, from: Data(contentsOf: url))
+        let recordedShaft = capture.strokes[4]
+        let recordedHead = capture.strokes[5]
+        let frame = Frame(id: recordedShaft.frameID, displayID: 1, boundsInPoints: recordedShaft.frameSize)
+        var original = Session()
+        try original.addFrame(frame)
+        let shaft = try draw(recordedShaft.points.map { ($0.x, $0.y) }, in: &original, frame: frame, at: 0)
+        let clean: [XY] = recordedHead.points.map { ($0.x, $0.y) }
+        for amplitude in [0.5, 1.0] {
+            var absorbed = 0
+            for seed in 1...64 {
+                var session = original
+                _ = try draw(jitter(clean, seed: UInt64(seed), amplitude: amplitude),
+                             in: &session, frame: frame, at: 1)
+                if session.liveMarks.map(\.id) == [shaft] { absorbed += 1 }
+            }
+            XCTAssertEqual(absorbed, 64, "Recorded V absorbed at ±\(amplitude) pt per axis: \(absorbed)/64")
+        }
+    }
+
+    func testStartLookBackRequiresAHeadOrTargetAndIsDirectionalAndBounded() {
+        let source = target(.area(.rectangle(PointRect(origin: Point(x: 100, y: 100),
+                                                       size: Size(width: 100, height: 80)))), id: 1)
+        let destination = target(.pin, id: 2, ink: [(540, 140)])
+        XCTAssertEqual(recognize([(230, 140), (540, 140)], near: [source, destination]), .arrow(from: 1, to: 2))
+        XCTAssertEqual(recognize([(230, 140), (540, 140), (518, 126)], near: [source]), .arrow(from: 1, to: nil))
+        XCTAssertEqual(recognize([(230, 140), (540, 140)], near: [source]), .mark)
+        XCTAssertEqual(recognize([(241, 140), (540, 140)], near: [source, destination]), .arrow(from: nil, to: 2))
+        XCTAssertEqual(recognize([(230, 90), (540, 90), (518, 76)], near: [source]), .arrow(from: nil, to: nil))
+        XCTAssertEqual(recognize([(225, 140), (350, 140), (330, 126)], near: [source]), .arrow(from: nil, to: nil))
+    }
+
+    func testUndoRemovesAllHeadsAndRestoresShaft() throws {
+        var (session, frame, shaft) = try shaftSession()
+        _ = try draw([(550, 300), (528, 286)], in: &session, frame: frame, at: 1)
+        _ = try draw([(529, 315), (550, 300)], in: &session, frame: frame, at: 2)
+        XCTAssertEqual(session.strokes.suffix(2).map(\.absorbedInto), [shaft, shaft])
+        session.undoLatestMark(in: [frame.id])
+        XCTAssertEqual(session.liveMarks.map(\.id), [shaft])
+        XCTAssertEqual(session.strokes[0].shape, .mark)
+        XCTAssertTrue(session.strokes.suffix(2).allSatisfy(\.isDeleted))
+        session.undoLatestMark(in: [frame.id])
+        XCTAssertTrue(session.liveMarks.isEmpty)
+    }
+
+    func testStartVReversesShaftAndUndoRestoresItsDirection() throws {
+        var (session, frame, shaft) = try shaftSession()
+        _ = try draw([(420, 286), (400, 300), (420, 314)], in: &session, frame: frame, at: 1)
+        XCTAssertEqual(session.liveMarks.map(\.id), [shaft])
+        XCTAssertEqual(session.liveMarks.first?.shaftReversed, true)
+        session.undoLatestMark(in: [frame.id])
+        XCTAssertEqual(session.liveMarks.first?.shape, .mark)
+        XCTAssertNil(session.liveMarks.first?.shaftReversed)
+    }
+
+    func testMultiHeadUndoRemovesAlreadyLinkedShaftWhenHeadsChangedNothing() throws {
+        var session = Session()
+        let frame = Frame(id: Frame.ID(), displayID: 1, boundsInPoints: frameSize)
+        try session.addFrame(frame)
+        let pin = try draw([(400, 300)], in: &session, frame: frame, at: 0)
+        let shaft = try draw([(400, 300), (550, 300)], in: &session, frame: frame, at: 1)
+        _ = try draw([(550, 300), (528, 286)], in: &session, frame: frame, at: 2)
+        _ = try draw([(529, 315), (550, 300)], in: &session, frame: frame, at: 3)
+        let head: [XY] = [(530, 286), (550, 300), (530, 314)]
+        _ = try draw(head, in: &session, frame: frame, at: 4)
+        XCTAssertEqual(session.liveMarks.last?.shape, .arrow(from: pin, to: nil))
+        XCTAssertEqual(session.strokes.suffix(3).map(\.absorbedInto), [shaft, shaft, shaft])
+        session.undoLatestMark(in: [frame.id])
+        XCTAssertEqual(session.liveMarks.map(\.id), [pin])
+        XCTAssertTrue(session.strokes.suffix(4).allSatisfy(\.isDeleted))
+    }
+
+    func testRedrawnVUsesHeadUndoTimeOnTheSameShaft() throws {
+        var (session, frame, shaft) = try shaftSession()
+        let head: [XY] = [(530, 286), (550, 300), (530, 314)]
+        let headID = try draw(head, in: &session, frame: frame, at: 1)
+        session.undoLatestMark(in: [frame.id], at: 10)
+        XCTAssertEqual(session.liveMarks.first?.shape, .mark)
+        let restored = try JSONDecoder().decode(Session.self, from: JSONEncoder().encode(session))
+        XCTAssertEqual(session, restored)
+
+        for time in [9.0, 10, 13, 13.01] {
+            session = restored
+            let redraw = try draw(head, in: &session, frame: frame, at: time)
+            XCTAssertEqual(redraw, headID)
+            if (10...13).contains(time) {
+                XCTAssertEqual(session.liveMarks.map(\.id), [shaft])
+                XCTAssertEqual(session.liveMarks.first?.shape, .arrow(from: nil, to: nil))
+            } else {
+                XCTAssertEqual(session.liveMarks.map(\.id), [shaft, redraw])
+            }
+        }
+    }
+
+    func testRedrawnVUsesMonotonicUndoTimeForAnUntimedCaller() throws {
+        var (session, frame, shaft) = try shaftSession()
+        let head: [XY] = [(530, 286), (550, 300), (530, 314)]
+        let headID = try draw(head, in: &session, frame: frame, at: 1)
+        session.undoLatestMark(in: [frame.id])
+        XCTAssertEqual(session.liveMarks.first?.shape, .mark)
+        let redraw = try draw(head, in: &session, frame: frame, at: 10)
+        XCTAssertEqual(redraw, headID)
+        XCTAssertEqual(session.liveMarks.map(\.id), [shaft])
+    }
+
     func testArrowCanPointAtOrBetweenMarks() {
         let left = target(.area(.rectangle(PointRect(origin: Point(x: 100, y: 100),
                                                      size: Size(width: 100, height: 80)))), id: 1)
@@ -821,18 +1048,20 @@ final class ShapeRecognizerTests: XCTestCase {
         let shaft = try draw([(300, 300), (500, 300)], at: 1)
         XCTAssertEqual(session.liveMarks.last?.shape, .arrow(from: pin, to: nil))
         let first = try draw([(300, 300), (322, 288)], at: 3)
+        XCTAssertEqual(session.liveMarks.map(\.id), [pin, shaft, first])
+        XCTAssertEqual(session.liveMarks[1].shape, .arrow(from: pin, to: nil))
+        let second = try draw([(322, 312), (300, 300)], at: 5.5)
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(session.liveMarks.map(\.id), [pin, shaft])
         XCTAssertEqual(session.liveMarks.last?.shape, .arrow(from: nil, to: pin))
         XCTAssertEqual(session.liveMarks.last?.shaftReversed, true)
-        let afterFirst = session
-        let second = try draw([(322, 312), (300, 300)], at: 5.5)
-        XCTAssertEqual(first, second)
-        XCTAssertEqual(session.liveMarks.map(\.id), [pin, shaft])
         XCTAssertEqual(session.strokes.suffix(2).map(\.absorbedInto), [shaft, shaft])
+        let afterPair = session
         let next = try draw([(700, 500)], at: 7)
         XCTAssertEqual(next, first)
         XCTAssertEqual(Set(session.strokes.map(\.id)).count, 5)
 
-        var reloaded = try JSONDecoder().decode(Session.self, from: JSONEncoder().encode(afterFirst))
+        var reloaded = try JSONDecoder().decode(Session.self, from: JSONEncoder().encode(afterPair))
         let arrow = try XCTUnwrap(reloaded.liveMarks.last)
         let record = StrokeRecording.Record(stroke: arrow, frame: frame)
         XCTAssertEqual(record.shaftReversed, true)
@@ -840,6 +1069,7 @@ final class ShapeRecognizerTests: XCTestCase {
         reloaded.undoLatestMark(in: [frame.id])
         XCTAssertEqual(reloaded.liveMarks.last?.shape, .arrow(from: pin, to: nil))
         XCTAssertNil(reloaded.liveMarks.last?.shaftReversed)
+        XCTAssertTrue(reloaded.strokes.suffix(2).allSatisfy(\.isDeleted))
     }
 
     func testAbsorbedNumberCanBeReusedAfterAnOverlappingPenDown() throws {
