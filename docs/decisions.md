@@ -220,3 +220,11 @@ The format and several lessons come from the maintainer's earlier project, Benji
 - **Why:** The owner wanted clearer groups, a visible way to recover missing access, and a choice of ink and icon colour.
 - **Supersedes:** D-29's red active and app icons, and D-30's plain styling and permission links in the footer.
 - **Status:** Implemented with preference, renderer, and PNG export tests and offscreen previews. Live glass, Reduce Transparency, and the permission recovery controls await a human run.
+
+
+### D-34 · No verify step in Pilcrow
+- **When / who:** 2026-11-23 · Owner.
+- **Decision:** Drop the planned "verify" wave: re-capturing each marked region after the agent reports done, showing before and after, and ticking off each `[n]`. Pilcrow stops at handing the agent the marks, words and images, by paste or MCP.
+- **Why:** Checking its own fixes is the agent's job, with its own browser, screenshot and test tools. Keeping Pilcrow to capture keeps it small.
+- **Supersedes:** The roadmap's Wave 3.
+- **Status:** Recorded.
