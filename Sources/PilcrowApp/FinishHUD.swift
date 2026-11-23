@@ -134,6 +134,7 @@ private final class FinishPanel: NSPanel {
 final class FinishHUD: NSObject {
     private let capture: FinishedCapture
     private let review: () -> Void
+    private let didDismiss: () -> Void
     private let panel = FinishPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                    backing: .buffered, defer: false)
     private var timer: Timer?
@@ -141,10 +142,12 @@ final class FinishHUD: NSObject {
     private var dismissed = false
     private let text: ReceiptText
 
-    init(capture: FinishedCapture, copied: Bool, saveFailed: Bool, review: @escaping () -> Void) {
+    init(capture: FinishedCapture, copied: Bool, saveFailed: Bool, review: @escaping () -> Void,
+         didDismiss: @escaping () -> Void) {
         self.capture = capture
         self.text = ReceiptText(marks: capture.approval.marks.count, copied: copied, saveFailed: saveFailed)
         self.review = review
+        self.didDismiss = didDismiss
         super.init()
         panel.isReleasedWhenClosed = false
         panel.isOpaque = false
@@ -263,10 +266,16 @@ final class FinishHUD: NSObject {
         timer = nil
         panel.ignoresMouseEvents = true
         let panel = panel
+        let didDismiss = didDismiss
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.18
             panel.animator().alphaValue = 0
-        }, completionHandler: { Task { @MainActor in panel.orderOut(nil) } })
+        }, completionHandler: {
+            Task { @MainActor in
+                panel.orderOut(nil)
+                didDismiss()
+            }
+        })
     }
 
     private func openReview() {

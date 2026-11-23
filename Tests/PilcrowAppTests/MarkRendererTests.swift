@@ -133,8 +133,6 @@ final class MarkRendererTests: XCTestCase {
         let source = try XCTUnwrap(CGImageSourceCreateWithData(png as CFData, nil))
         let crop = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
         XCTAssertEqual(crop.width, Int(plan.sourcePixelRect.size.width))
-        // Nothing red touches the crop's left or right edge, so the whole enlarged badge is inside it.
-        // (Top and bottom are the frame's own edges here.)
         let pixels = try XCTUnwrap(crop.dataProvider?.data as Data?)
         let row = crop.bytesPerRow, step = crop.bitsPerPixel / 8
         func red(_ x: Int, _ y: Int) -> Bool {
@@ -142,8 +140,16 @@ final class MarkRendererTests: XCTestCase {
             return pixels[i] > 150 && pixels[i + 1] < 90 && pixels[i + 2] < 90
         }
         let edges = (0..<crop.height).flatMap { [(0, $0), (crop.width - 1, $0)] }
-        XCTAssertFalse(edges.contains { red($0.0, $0.1) }, "The crop must include the whole enlarged badge")
-        XCTAssertTrue((0..<crop.height).contains { y in (0..<crop.width).contains { red($0, y) } })
+            + (0..<crop.width).flatMap { [($0, 0), ($0, crop.height - 1)] }
+        XCTAssertFalse(edges.contains { x, y in
+            let i = y * row + x * step
+            return pixels[i] > 5 || pixels[i + 1] > 5 || pixels[i + 2] > 5
+        }, "The crop must include the whole enlarged badge and its outline")
+        // The shaft and head stay around the centre row. A wide row of red well
+        // away from that ink must come from the six-digit badge itself.
+        let badgeRows = (0..<crop.height).filter { abs($0 - crop.height / 2) > 16 }
+        let widestBadgeRow = badgeRows.map { y in (0..<crop.width).count { red($0, y) } }.max() ?? 0
+        XCTAssertGreaterThan(widestBadgeRow, 150, "The enlarged badge fill must be present away from the arrow")
     }
 
     /// Live capture 2026-11-22: oval [4], an arrow [5] from [4] to oval [6] drawn afterwards around its tip.

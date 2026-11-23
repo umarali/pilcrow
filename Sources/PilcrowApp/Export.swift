@@ -215,7 +215,7 @@ enum Export {
                 }
                 writeFile(plan.outputName) { url in
                     let items = fixes.filter { $0.frameID == plan.frameID && !$0.words.isEmpty }
-                    let output = try captioned(size: plan.outputSize, sourceRect: nil, items: items, framePanel: true)
+                    let output = try? captioned(size: plan.outputSize, sourceRect: nil, items: items, framePanel: true)
                     imageData[plan.outputName] = try writePNG(output ?? composite,
                         size: output.map { PixelSize(width: $0.width, height: $0.height) } ?? plan.outputSize, to: url)
                 }

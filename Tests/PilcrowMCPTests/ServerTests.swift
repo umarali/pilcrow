@@ -68,6 +68,49 @@ final class ServerTests: XCTestCase {
             XCTAssertEqual(try call(s, "pilcrow_get", ["id": latest.id.uuidString, "mark": 999])["isError"] as? Bool, true)
         }
     }
+
+    func testRepeatedLatestCallsKeepOpenDescriptorCountStable() throws {
+        try withRoot { root in
+            let capture = try item(root, destination: .clipboard,
+                                   attachments: [.init(name: "mark-1.png", kind: .crop, mark: 1)])
+            let server = Server(root: root)
+            func descriptorCount() -> Int {
+                (0..<getdtablesize()).count { fcntl($0, F_GETFD) != -1 }
+            }
+            _ = try call(server, "pilcrow_latest")
+            let before = descriptorCount()
+            for _ in 0..<50 {
+                let response = try contents(call(server, "pilcrow_latest"))
+                XCTAssertEqual(response.first?["text"] as? String, capture.text)
+                XCTAssertEqual(response.count, 2)
+            }
+            XCTAssertEqual(descriptorCount(), before)
+        }
+    }
+
+    func testSingleMarkFetchIncludesOnlyItsFrameHeader() throws {
+        try withRoot { root in
+            let firstHeader = "frame-1.png — Editor · \"First file\""
+            let secondHeader = "frame-2.png — Browser · \"Second page\""
+            let selected = "- [3] (point) on \"Save\" → mark-3.png (in frame-1.png)"
+            let capture = try item(root, attachments: [
+                .init(name: "frame-1.png", kind: .frame), .init(name: "mark-3.png", kind: .crop, mark: 3)
+            ], text: """
+                [1] [2] [3]
+
+                \(firstHeader)
+                - [1] (point) → mark-1.png (in frame-1.png)
+                \(secondHeader)
+                - [2] (point) → mark-2.png (in frame-2.png)
+                \(selected)
+                """)
+            let response = try contents(call(Server(root: root), "pilcrow_get", ["id": capture.id.uuidString, "mark": 3]))
+            XCTAssertEqual(response.first?["text"] as? String, firstHeader + "\n" + selected)
+            XCTAssertEqual(response.count, 2)
+            XCTAssertEqual(response.last?["data"] as? String, png.base64EncodedString())
+        }
+    }
+
     func testLocalStrokeCalibrationIsIgnoredAndCannotBecomeAnAttachment() throws {
         try withRoot { root in
             let manifest = try item(root, attachments: [.init(name: "frame-1.png", kind: .frame),

@@ -83,13 +83,18 @@ struct Server {
             }.joined(separator: "\n"))
         }
         beforeServing?()
-        let selected: (item: Item, folder: Int32)?
+        var selected: (item: Item, folder: Int32)? = nil
         if name == "pilcrow_get" {
             guard let item = items.first(where: { $0.manifest.id.uuidString.caseInsensitiveCompare(arguments["id"] as? String ?? "") == .orderedSame }),
                   let folder = openFolder(for: item) else { return text("Capture id not found.", error: true) }
             selected = (item, folder)
         } else {
-            selected = items.lazy.compactMap { item in openFolder(for: item).map { (item, $0) } }.first
+            for item in items {
+                if let folder = openFolder(for: item) {
+                    selected = (item, folder)
+                    break
+                }
+            }
         }
         guard let (item, folder) = selected else { return text(Self.empty) }
         defer { close(folder) }
@@ -97,7 +102,14 @@ struct Server {
         var message = item.manifest.text
         if let mark = requestedMark {
             guard let line = fixLines(message).first(where: { $0.0 == mark })?.1 else { return text("Mark \(mark) not found.", error: true) }
-            message = line
+            if let association = line.range(of: " → mark-\(mark).png (in ", options: .backwards),
+               let end = line[association.upperBound...].firstIndex(of: ")") {
+                let frame = line[association.upperBound..<end]
+                let header = message.components(separatedBy: "\n").first { $0.hasPrefix("\(frame) — ") }
+                message = header.map { $0 + "\n" + line } ?? line
+            } else {
+                message = line
+            }
             images = images.filter { $0.attachment.kind == .crop && $0.attachment.mark == mark }
         }
         var content: [[String: Any]] = [["type": "text", "text": message]]

@@ -18,7 +18,8 @@ struct SettingsAccessLine: Equatable {
             lines.append(Self(text: "Pilcrow can’t capture without it.", action: .screen))
         }
         if microphone != .on {
-            lines.append(Self(text: "Microphone is off. Marks work, voice won’t.", action: .microphone))
+            let detail = screenRecording ? "Microphone is off. Marks work, voice won’t." : "Microphone is off."
+            lines.append(Self(text: detail, action: .microphone))
         }
         return lines
     }
@@ -51,7 +52,6 @@ final class SettingsPresentation: ObservableObject {
     @Published var recorderNote = ""
     @Published var access: [SettingsAccessLine] = []
     @Published var accessEnabled = true
-    @Published var microphoneEnabled = true
     @Published var reopenMessage: String?
     @Published var canReopen = false
     @Published var voiceNote = ""
@@ -70,6 +70,14 @@ final class SettingsPresentation: ObservableObject {
     var showCaptures: () -> Void = {}
     var clearCaptures: () -> Void = {}
     var colourChanged: (PilcrowColour) -> Void = { _ in }
+
+    func updateAccess(screenRecording: Bool, microphone: SettingsMicrophoneAccess, canStart: Bool,
+                      voiceStatus: String, voiceAction: String?, voiceActionEnabled: Bool) {
+        access = SettingsAccessLine.lines(screenRecording: screenRecording, microphone: microphone)
+        accessEnabled = canStart
+        voiceNote = voiceStatus == "On" ? "" : voiceStatus
+        self.voiceAction = voiceActionEnabled ? voiceAction : nil
+    }
 
     func selectColour(_ choice: PilcrowColour) {
         guard colour != choice else { return }
@@ -168,11 +176,17 @@ struct SettingsStoryView: View {
 
     private func step<Content: View>(_ number: Int, @ViewBuilder content: () -> Content) -> some View {
         let blocked = model.access.contains { $0.action == .screen }
+        var fill = model.colour.accent(dark: dark)
+        if blocked {
+            NSAppearance(named: dark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
+                fill = NSColor.systemGray.cgColor
+            }
+        }
         return HStack(alignment: .top, spacing: 13) {
             Text(String(number)).font(.system(size: 12, weight: .bold, design: .rounded))
-                .foregroundStyle(blocked ? Color.white : Color(cgColor: model.colour.badgeText))
+                .foregroundStyle(Color(cgColor: PilcrowColour.settingsNumeral(on: fill)))
                 .frame(width: 22, height: 22)
-                .background(blocked ? Color(nsColor: .systemGray) : accent, in: Circle())
+                .background(Color(cgColor: fill), in: Circle())
                 .padding(.top, 2).accessibilityLabel("Step \(number)")
             content().frame(minHeight: 26, alignment: .leading)
         }
@@ -336,13 +350,20 @@ struct SettingsStoryView: View {
         glassGroup(radius: 22) {
             HStack(spacing: 8) {
                 Image(systemName: "mic.slash").foregroundStyle(.orange).accessibilityHidden(true)
-                Text(detail).font(.system(size: 11.5))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(detail)
+                    if !model.voiceNote.isEmpty { Text(model.voiceNote).foregroundStyle(.secondary) }
+                }
+                .font(.system(size: 11.5))
+                .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
-                Button("Turn On…", action: model.microphoneAccess)
-                    .fontWeight(.semibold)
-                    .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.small)
-                    .tint(.primary).background(.orange.opacity(0.14), in: Capsule())
-                    .disabled(!model.microphoneEnabled).fixedSize()
+                if let action = model.voiceAction {
+                    Button(action, action: model.microphoneAccess)
+                        .fontWeight(.semibold)
+                        .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.small)
+                        .tint(.primary).background(.orange.opacity(0.14), in: Capsule())
+                        .fixedSize()
+                }
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
         }
@@ -362,11 +383,11 @@ struct SettingsStoryView: View {
                     if model.canReopen { Button("Quit & Reopen", action: model.reopen) }
                 }
             }
-            if !model.voiceNote.isEmpty {
+            if !model.access.contains(where: { $0.action == .microphone }), !model.voiceNote.isEmpty {
                 HStack {
                     Text(model.voiceNote).fixedSize(horizontal: false, vertical: true)
                     if let action = model.voiceAction {
-                        Button(action, action: model.microphoneAccess).disabled(!model.microphoneEnabled)
+                        Button(action, action: model.microphoneAccess)
                     }
                 }
             }

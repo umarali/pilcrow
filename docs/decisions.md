@@ -239,3 +239,11 @@ The format and several lessons come from the maintainer's earlier project, Benji
 - **Decision:** Bound the entire background OCR collection to 600 ms, including queue time. Keep only results ready before the deadline; ignore late completion. Use one serial worker across captures so abandoned work cannot spawn concurrent Vision requests. Optional frame `context` and crop `visibleText` fields travel through v1 manifest attachments and existing MCP messages without new tools.
 - **Why:** App/window names and visible labels give a coding agent useful search terms without asking the speaker to describe them. Clipboard-first Finish stays bounded, and existing captures still decode.
 - **Status:** Implemented; automated synthetic Vision, formatting, timeout and compatibility tests cover delivery. Live window selection and Finish-to-HUD timing require the human checks in `docs/live-test-m1.md`.
+
+
+### Review fixes 2026-11-23
+
+- **D-31.** Preserve the annotated frame when the caption panel cannot fit. The crops and full message keep their words. The README documents the 24-hour, cross-project scope for configured agents.
+- **D-32.** Document badge positions as first choices subject to collision handling, including mid-shaft for arrows linked at both ends.
+- **D-33.** Settings step numerals choose a dark foreground when white has below 3:1 contrast against the actual fill. The Microphone pill shows the current status and offers an action when available. The successful copy notice ends with its receipt (D-30).
+- **D-35.** Cap the app name and window title at 120 characters each. Pad OCR crops, process smaller ones first and skip any above 1 million source pixels. Areas require whole words. Pins and arrow tips use one clear, fully visible label nearby. Skip OCR when there is no eligible work. A single-mark MCP fetch includes its frame header when present.

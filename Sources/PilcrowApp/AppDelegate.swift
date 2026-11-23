@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let reviewLast = NSMenuItem(title: "Review last capture…", action: #selector(reviewLastCapture), keyEquivalent: "")
     private let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
     private let result = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private var resultID: UUID?
     private let screenRecording = NSMenuItem(title: "Screen Recording needed…", action: #selector(showSettings), keyEquivalent: "")
     private let shortcutWarning = NSMenuItem(title: "Shortcut unavailable", action: nil, keyEquivalent: "")
     private lazy var permissions: Permissions = Permissions(stateChanged: { [weak self] _ in
@@ -279,11 +280,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let capture = FinishedCapture(approval: kept, outbox: self.outbox,
                     exports: self.exports, shellPath: shell, published: !saveFailed)
                 self.finishedCapture = capture
-                var copied = false
+                let copied: Bool
                 do { try capture.copy(); copied = true }
-                catch { self.showResult("Couldn’t copy capture") }
-                self.showResult(saveFailed ? "Couldn’t save capture" : (copied ? "Copied · ⌘V" : "Couldn’t copy capture"))
-                self.showHUD(capture, copied: copied, saveFailed: saveFailed)
+                catch { copied = false }
+                let notice = self.showResult(saveFailed ? "Couldn’t save capture" : (copied ? "Copied · ⌘V" : "Couldn’t copy capture"))
+                self.showHUD(capture, copied: copied, saveFailed: saveFailed, successNotice: copied && !saveFailed ? notice : nil)
                 let milliseconds = (ProcessInfo.processInfo.systemUptime - approval.finishStartedAt) * 1000
                 stateLog.notice("Finish-to-HUD: \(milliseconds, privacy: .public) ms, including voice drain")
                 self.finishing = false
@@ -297,17 +298,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             session = current
             updateStatusIcon()
             updateShortcutDisplay()
-            result.isHidden = true
+            if let resultID { expireResult(resultID) }
         } else {
-            result.title = "No display available"
-            result.isHidden = false
+            showResult("No display available")
         }
     }
 
-    private func showHUD(_ capture: FinishedCapture, copied: Bool, saveFailed: Bool) {
+    private func showHUD(_ capture: FinishedCapture, copied: Bool, saveFailed: Bool, successNotice: UUID?) {
         hud?.dismiss()
         let hud = FinishHUD(capture: capture, copied: copied, saveFailed: saveFailed,
-            review: { [weak self] in self?.review(capture) })
+            review: { [weak self] in self?.review(capture) },
+            didDismiss: { [weak self] in
+                if let successNotice { self?.expireResult(successNotice) }
+            })
         self.hud = hud
         hud.show()
     }
@@ -388,10 +391,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         releaseAnnotateHotKey()
     }
 
-    private func showResult(_ message: String) {
+    @discardableResult
+    func showResult(_ message: String) -> UUID {
+        let id = UUID()
+        resultID = id
         result.title = message
         result.isHidden = false
-        item.button?.toolTip = message
+        item?.button?.toolTip = message
+        return id
+    }
+
+    func expireResult(_ id: UUID) {
+        guard id == resultID else { return }
+        resultID = nil
+        result.isHidden = true
+        if let button = item?.button, button.toolTip == result.title {
+            button.toolTip = shortcutWarning.isHidden ? "Pilcrow · " + hotKeys.label(for: .annotate) : "Pilcrow · Shortcut unavailable"
+        }
     }
 
     @objc private func clearSentCaptures() {

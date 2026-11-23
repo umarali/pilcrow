@@ -29,6 +29,60 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(command.action, visible[3].action)
     }
 
+    @MainActor
+    func testCopyNoticeExpiryLeavesNewerErrorsVisible() throws {
+        let delegate = AppDelegate()
+        let menu = delegate.makeStatusMenu()
+        let row = try XCTUnwrap(menu.items.first { $0.title.isEmpty && !$0.isSeparatorItem })
+
+        let firstCopy = delegate.showResult("Copied · ⌘V")
+        XCTAssertFalse(row.isHidden)
+        delegate.expireResult(firstCopy)
+        XCTAssertTrue(row.isHidden)
+
+        let secondCopy = delegate.showResult("Copied · ⌘V")
+        XCTAssertFalse(row.isHidden)
+        delegate.showResult("Couldn’t remove capture")
+        delegate.expireResult(secondCopy)
+        XCTAssertFalse(row.isHidden)
+        XCTAssertEqual(row.title, "Couldn’t remove capture")
+    }
+
+    @MainActor
+    func testUnavailableSpeechModelShowsReasonWithoutAnAction() {
+        let model = SettingsPresentation()
+        model.updateAccess(screenRecording: true, microphone: .undetermined, canStart: true,
+                           voiceStatus: "Speech model unavailable", voiceAction: nil, voiceActionEnabled: false)
+        XCTAssertEqual(model.voiceNote, "Speech model unavailable")
+        XCTAssertNil(model.voiceAction)
+        model.updateAccess(screenRecording: true, microphone: .undetermined, canStart: true,
+                           voiceStatus: "Uses the microphone during annotation", voiceAction: "Turn On…", voiceActionEnabled: true)
+        XCTAssertEqual(model.voiceAction, "Turn On…")
+        model.updateAccess(screenRecording: false, microphone: .undetermined, canStart: false,
+                           voiceStatus: "Uses the microphone during annotation", voiceAction: "Turn On…", voiceActionEnabled: false)
+        XCTAssertNil(model.voiceAction)
+    }
+
+    func testSettingsNumeralsUseActualLightAndDarkAccentFills() {
+        for dark in [false, true] {
+            for colour in PilcrowColour.allCases {
+                let fill = colour.accent(dark: dark)
+                let foreground = PilcrowColour.settingsNumeral(on: fill)
+                let components = fill.components!
+                func linear(_ value: CGFloat) -> CGFloat {
+                    value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+                }
+                let luminance = 0.2126 * linear(components[0]) + 0.7152 * linear(components[1]) + 0.0722 * linear(components[2])
+                let contrast = foreground.components?.first == 1 ? 1.05 / (luminance + 0.05) : (luminance + 0.05) / 0.05
+                XCTAssertGreaterThanOrEqual(contrast, 3, "\(colour), dark: \(dark)")
+            }
+        }
+        for colour in [PilcrowColour.teal, .green] {
+            XCTAssertEqual(PilcrowColour.settingsNumeral(on: colour.accent(dark: false)).components?.first, 1)
+            XCTAssertEqual(PilcrowColour.settingsNumeral(on: colour.accent(dark: true)).components?.first, 0)
+        }
+    }
+
     func testSetupCommandsUseTheSuppliedBundlePath() {
         let bundle = URL(fileURLWithPath: "/Volumes/Tools/Pilcrow.app")
         XCTAssertEqual(MCPSetupCommand.build(for: .claude, bundleURL: bundle),
@@ -61,11 +115,12 @@ final class SettingsTests: XCTestCase {
     func testAccessStatesForEveryPermissionCombination() {
         let screenOff = SettingsAccessLine(text: "Pilcrow can’t capture without it.", action: .screen)
         let micOff = SettingsAccessLine(text: "Microphone is off. Marks work, voice won’t.", action: .microphone)
+        let bothOff = SettingsAccessLine(text: "Microphone is off.", action: .microphone)
         for microphone in SettingsMicrophoneAccess.allCases {
             XCTAssertEqual(SettingsAccessLine.lines(screenRecording: true, microphone: microphone),
                            microphone == .on ? [SettingsAccessLine(text: "Screen Recording and Microphone are on.", action: nil)] : [micOff])
             XCTAssertEqual(SettingsAccessLine.lines(screenRecording: false, microphone: microphone),
-                           microphone == .on ? [screenOff] : [screenOff, micOff])
+                           microphone == .on ? [screenOff] : [screenOff, bothOff])
         }
     }
 

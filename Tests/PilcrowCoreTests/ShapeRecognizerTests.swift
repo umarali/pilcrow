@@ -843,6 +843,59 @@ final class ShapeRecognizerTests: XCTestCase {
         XCTAssertEqual(separate, 64, "Second strokes kept separate: \(separate)/64")
     }
 
+
+    func testDetachedTicksKeepTheirNumberNearEitherShaftEnd() throws {
+        let frame = Frame(id: Frame.ID(), displayID: 1, boundsInPoints: Size(width: 1000, height: 800))
+        let vertical: [XY] = [(400, 150), (400, 300)]
+        let horizontal: [XY] = [(200, 400), (400, 400)]
+        let rightTick: [XY] = [(416, 300), (445, 327), (492, 278)]
+        let cases: [(shaft: [XY], tick: [XY])] = [
+            (vertical, rightTick),
+            (vertical, [(330, 300), (352, 322), (392, 282)]),
+            (Array(vertical.reversed()), rightTick),
+            (horizontal, [(412, 398), (428, 414), (462, 376)]),
+            (horizontal, [(380, 372), (392, 386), (420, 352)])
+        ]
+        for (index, fixture) in cases.enumerated() {
+            var original = Session()
+            try original.addFrame(frame)
+            let shaft = try draw(fixture.shaft, in: &original, frame: frame, at: 0)
+            for samples in [1, 4, 8, 16, 32] {
+                for amplitude in [0.0, 0.25, 0.5, 1.0] {
+                    let clean = polyline(fixture.tick, samplesPerEdge: samples)
+                    var separate = 0
+                    for seed in 1...(amplitude == 0 ? 1 : 64) {
+                        var session = original
+                        let tick = try draw(jitter(clean, seed: UInt64(seed), amplitude: amplitude),
+                                            in: &session, frame: frame, at: 1)
+                        if session.liveMarks.map(\.id) == [shaft, tick], session.liveMarks[0].shape == .mark,
+                           session.liveMarks[1].shape == .mark {
+                            separate += 1
+                        }
+                    }
+                    XCTAssertEqual(separate, amplitude == 0 ? 1 : 64,
+                                   "Case \(index), \(samples) samples per arm, ±\(amplitude) pt jitter")
+                }
+            }
+        }
+    }
+
+    func testUndoOfDetachedTickKeepsPinAndLinkedShaft() throws {
+        let frame = Frame(id: Frame.ID(), displayID: 1, boundsInPoints: Size(width: 1000, height: 800))
+        var session = Session()
+        try session.addFrame(frame)
+        let pin = try draw([(400, 150)], in: &session, frame: frame, at: 0)
+        let shaft = try draw([(400, 150), (400, 300)], in: &session, frame: frame, at: 1)
+        let before = session.liveMarks
+        let path = polyline([(416, 300), (445, 327), (492, 278)], samplesPerEdge: 32)
+        let tick = try draw(jitter(path, seed: 2, amplitude: 1), in: &session, frame: frame, at: 2)
+        XCTAssertEqual(session.liveMarks.map(\.id), [pin, shaft, tick])
+        XCTAssertEqual(session.nextMarkNumber, 4)
+        session.undoLatestMark(in: [frame.id])
+        XCTAssertEqual(session.liveMarks, before)
+        XCTAssertEqual(session.nextMarkNumber, 4, "Undo reserves the tick's number")
+    }
+
     func testFollowUpVAbsorbsWithUpToOnePointOfSampleJitter() throws {
         let (original, frame, shaft) = try shaftSession()
         let clean = polyline([(530, 286), (550, 300), (530, 314)], samplesPerEdge: 16)

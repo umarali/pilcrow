@@ -26,6 +26,18 @@ enum PilcrowColour: String, CaseIterable, Sendable {
     var ink: CGColor { accent(dark: false) }
     var badgeText: CGColor { self == .amber ? Self.sRGB(0x3B2600) : CGColor(gray: 1, alpha: 1) }
 
+    static func settingsNumeral(on fill: CGColor) -> CGColor {
+        let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+        guard let components = fill.converted(to: sRGB, intent: .defaultIntent, options: nil)?.components,
+              components.count >= 3 else { return CGColor(gray: 1, alpha: 1) }
+        func linear(_ value: CGFloat) -> CGFloat {
+            value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * linear(components[0]) + 0.7152 * linear(components[1]) + 0.0722 * linear(components[2])
+        let whiteContrast = 1.05 / (luminance + 0.05)
+        return CGColor(gray: whiteContrast < 3 ? 0 : 1, alpha: 1)
+    }
+
     static func load(from defaults: UserDefaults) -> Self {
         defaults.string(forKey: defaultsKey).flatMap(Self.init(rawValue:)) ?? .coral
     }

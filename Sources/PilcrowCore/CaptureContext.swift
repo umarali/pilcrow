@@ -13,8 +13,8 @@ public struct FrameContext: Sendable, Equatable, Hashable, Codable {
     }
 
     var messageLabel: String? {
-        let app = appName.flatMap(VisibleText.singleLine).map(TextSanitizer.markdownQuoted)
-        let title = windowTitle.flatMap(VisibleText.singleLine).map { "\"\(TextSanitizer.markdownQuoted($0))\"" }
+        let app = appName.flatMap { VisibleText.concise($0, limit: 120) }.map(TextSanitizer.markdownQuoted)
+        let title = windowTitle.flatMap { VisibleText.concise($0, limit: 120) }.map { "\"\(TextSanitizer.markdownQuoted($0))\"" }
         let parts = [app, title].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -28,7 +28,11 @@ public enum VisibleText {
 
     /// Limit by grapheme clusters, including the final ellipsis.
     public static func concise(_ text: String) -> String? {
+        concise(text, limit: 80)
+    }
+
+    fileprivate static func concise(_ text: String, limit: Int) -> String? {
         guard let clean = singleLine(text) else { return nil }
-        return clean.count > 80 ? String(clean.prefix(79)) + "…" : clean
+        return clean.count > limit ? String(clean.prefix(limit - 1)) + "…" : clean
     }
 }

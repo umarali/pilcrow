@@ -2,7 +2,7 @@ import Foundation
 
 /// Classifies completed ink without changing its recorded points.
 public enum ShapeRecognizer {
-    public static let version = "d28-forgiving-v3"
+    public static let version = "d28-forgiving-v4"
     private static let arrowMargin = 20.0
     private static let straightnessLimit = 1.2
     private static let minimumShaftLength = 30.0
@@ -415,6 +415,11 @@ public enum ShapeRecognizer {
         let box = bounds(of: ink, first: first)
         guard max(box.size.width, box.size.height) <= 110,
               nearestGap(to: tip, on: ink) <= 24 else { return false }
+
+        // The shaft axis must run between the arm ends, allowing 4 pt of drawing slack.
+        let firstSide = bx * (first.y - tip.y) - by * (first.x - tip.x)
+        let lastSide = bx * (last.y - tip.y) - by * (last.x - tip.x)
+        guard firstSide * lastSide < 0 || min(abs(firstSide), abs(lastSide)) <= 4 else { return false }
 
         for i in 1..<(ink.count - 1) {
             let apex = ink[i]

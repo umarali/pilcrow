@@ -65,6 +65,23 @@ final class CaptionExportTests: XCTestCase {
         }
     }
 
+
+    func testTwentySpokenMarksKeepTheAnnotatedFrameWhenCaptionsOverflow() throws {
+        let (session, original) = try fixture(markCount: 20, spokenCount: 20)
+        let message = MessageBuilder.build(session: session)
+        XCTAssertEqual(FixList.build(session: session).items.filter { !$0.words.isEmpty }.count, 20)
+        try withExport(session, original, colour: .teal) { result, folder in
+            XCTAssertTrue(result.attachments.contains("frame-1.png"))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("frame-1.png").path))
+            XCTAssertEqual(result.attachments.count, 21)
+            let frame = try image(result, "frame-1.png")
+            XCTAssertEqual(frame.width, 1600)
+            XCTAssertEqual(frame.height, 900)
+            XCTAssertFalse(try tealBands(frame, xRange: 390..<570).isEmpty, "The fallback frame keeps the ink")
+            XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("message.md"), encoding: .utf8), message.text)
+        }
+    }
+
     func testLongCaptionTruncationIsVisibleInPNGAndPreview() throws {
         let (session, original) = try fixture(long: true)
         try withExport(session, original) { result, folder in
@@ -144,7 +161,8 @@ final class CaptionExportTests: XCTestCase {
         let size = Size(width: 1600, height: 900)
         let frame = Frame(id: Frame.ID(), capturedAt: 0, displayID: 1, boundsInPoints: size, pixelSize: size)
         let strokes = (0..<markCount).map { index in
-            let point = NormalizedPoint(x: 0.25 + Double(index % 3) * 0.25, y: 0.25 + Double(index / 3) * 0.25)
+            let rowPitch = markCount > 6 ? 0.10 : 0.25
+            let point = NormalizedPoint(x: 0.25 + Double(index % 3) * 0.25, y: 0.25 + Double(index / 3) * rowPitch)
             let box = PointRect(origin: Point(x: point.x * 1600, y: point.y * 900), size: Size(width: 160, height: 60))
             return Stroke(id: MarkID(rawValue: index + 1), frameID: frame.id, downTime: Double(index) * 10,
                           upTime: Double(index) * 10 + 1, points: [point], badgeAnchor: point, shape: .area(.rectangle(box)))

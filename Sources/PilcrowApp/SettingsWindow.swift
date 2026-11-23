@@ -161,16 +161,11 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
     }
 
     private func refreshAccess() {
-        model.access = SettingsAccessLine.lines(screenRecording: permissions.screenGranted, microphone: permissions.microphone)
-        model.accessEnabled = permissions.canStart
-        model.microphoneEnabled = permissions.voiceActionEnabled
+        model.updateAccess(screenRecording: permissions.screenGranted, microphone: permissions.microphone,
+                           canStart: permissions.canStart, voiceStatus: permissions.voiceStatus,
+                           voiceAction: permissions.voiceAction, voiceActionEnabled: permissions.voiceActionEnabled)
         model.reopenMessage = permissions.reopenMessage
         model.canReopen = permissions.canReopen
-        // Microphone-off copy is fixed; supplement it only for setup progress/errors.
-        let voice = permissions.voiceStatus
-        model.voiceNote = voice == "On" || (permissions.microphone != .on &&
-            !voice.hasPrefix("Waiting") && !voice.hasPrefix("Downloading") && !voice.contains("failed")) ? "" : voice
-        model.voiceAction = permissions.microphone == .on ? permissions.voiceAction : nil
     }
 
     func refreshCaptures() {

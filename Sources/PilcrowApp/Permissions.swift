@@ -185,7 +185,7 @@ final class Permissions {
         defer {
             voiceAction = buttonTitle
             voiceActionEnabled = canStart && startCheck == nil && buttonTitle != nil
-                && (modelCheck == nil || buttonTitle != "Turn on")
+                && (modelCheck == nil || buttonTitle != "Turn On…")
             changed?()
         }
         if requestingMicrophone {
@@ -225,7 +225,7 @@ final class Permissions {
             voiceStatus = "On"
         case .installed:
             voiceStatus = "Uses the microphone during annotation"
-            buttonTitle = "Turn on"
+            buttonTitle = "Turn On…"
         case .supported:
             if modelDownloadFailed {
                 voiceStatus = "Speech model download failed"
@@ -234,7 +234,7 @@ final class Permissions {
             } else {
                 voiceStatus = "Uses the microphone and downloads a speech model"
             }
-            buttonTitle = "Turn on"
+            buttonTitle = "Turn On…"
         case .downloading:
             voiceStatus = "Downloading speech model…"
         default:

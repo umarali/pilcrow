@@ -33,6 +33,18 @@ final class CaptureContextTests: XCTestCase {
         XCTAssertFalse(MessageBuilder.build(session: try session(context: FrameContext())).text.contains("—"))
     }
 
+
+    func testFrameHeaderCapsBothNamesAt120Graphemes() throws {
+        let name = String(repeating: "a", count: 120)
+        let titleCharacter = "👨‍👩‍👧‍👦"
+        let title = String(repeating: titleCharacter, count: 119) + "…"
+        let context = FrameContext(appName: name + " excess", windowTitle: title + " excess")
+        let text = MessageBuilder.build(session: try session(context: context)).text
+        let header = try XCTUnwrap(text.split(separator: "\n").first { $0.hasPrefix("frame-1.png") })
+        XCTAssertEqual(header, "frame-1.png — \(name.dropLast())… · \"\(title)\"")
+        XCTAssertEqual(FrameContext(appName: name).messageLabel, name)
+    }
+
     func testVisibleTextTruncationAndEmptyInput() {
         XCTAssertNil(VisibleText.concise(" \n\t "))
         XCTAssertEqual(VisibleText.concise(String(repeating: "a", count: 80)), String(repeating: "a", count: 80))

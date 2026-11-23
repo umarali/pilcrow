@@ -1,6 +1,6 @@
 # Roadmap
 
-Pilcrow is **redline review, not recording** (D-16): mark up a live app with numbered red marks while you talk, approve exactly what is sent, and hand the agent a fix list.
+Pilcrow is **redline review** (D-16). Mark up a live app in the selected Pilcrow colour while you talk, then hand the agent a numbered fix list.
 
 ## Wave 1 — foundation (in progress)
 - App: no overlay until Screen Recording is granted; permissions window; click-through overlay, hold ⇧ to draw; session-scoped Esc and ⌘Z; new screenshot after you interact with the app underneath (D-17).
@@ -12,6 +12,7 @@ Pilcrow is **redline review, not recording** (D-16): mark up a live app with num
 - Approval preview: the exact words, crops and destination; nothing is sent until you approve.
 - Direct delivery: Codex CLI (`-i` images), Claude Code (image paths), a `pilcrow` command and an agent skill; MCP later.
 - Speech: on-device SpeechAnalyzer with word timing (D-17.6), `[n]` placement from Core's aligner.
+- Badge placement (D-32). First choices are the upper left on a box or oval, the right side of a pin with a left flip at the frame edge, and beside the head of an arrow with no target. Target-only arrows try beside the tail and arrows linked at both ends try mid-shaft. Earlier badges and other arrowheads can move a badge to another candidate.
 
 ## Not planned
 - Screen video recording, keyframe selection and auto-crop: [Scrawl](https://github.com/kitlangton/scrawl) does these well.

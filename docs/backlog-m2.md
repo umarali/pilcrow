@@ -90,3 +90,17 @@ Fable 5.2 found these cases in synthetic voice probes.
 - On the first mark, speaking with a pause and then drawing can lose the part before the pause from the fix line.
 - Clean up `What it is is` to `What it is` and `bigger, um.` to `bigger,`.
 - A drain timeout after a shortened final result can drop the volatile tail.
+
+## Wave-3 review backlog
+
+- **N3.** Measure release Finish timing before running OCR alongside image export.
+- **A5.** Measure live window lookup latency before moving it off the first-stroke path.
+- **A11.** Decide on alternate pin badge positions in Core so placement and arrow hit testing agree.
+- **A13.** Add scrolling when Settings exceeds the display's visible height.
+- **A10.** Try a tail-side badge position for arrows whose heads are in a frame corner.
+- **A15.** Measure release crop rendering cost before reusing full-frame annotations.
+- **N4.** Decide whether the receipt count badge should use the selected Pilcrow colour.
+- **A6, dropped.** Keep window provenance as a clue when a screenshot fails.
+- **A9, dropped.** The private, user-owned capture directory already limits who can replace a manifest.
+- **A14 palette change, dropped.** D-33 fixes the selected ink values and export badge colours.
+- **A7 Settings sentence, dropped.** Keep the setup card short and document agent access in the README.
